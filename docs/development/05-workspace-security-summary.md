@@ -2,7 +2,7 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：待用户审批。
+- 当前状态：已批准。
 - 依据 Spec：[05-workspace-security-spec.md](./05-workspace-security-spec.md)，已获用户批准。
 - 依据 Task：[05-workspace-security-tasks.md](./05-workspace-security-tasks.md)，已获用户批准。
 - 当前子阶段：开发、测试、整体验证与反思已完成。
@@ -416,7 +416,7 @@ docs/development/05-workspace-security-spec.md
 - [x] 未新增依赖、触碰真实项目或实现后续阶段。
 - [x] 开发索引已更新为“阶段 05 Summary 待用户审批”。
 
-**Summary 内部门禁：通过。当前状态：待用户审批。**
+**Summary 内部门禁：通过。当前状态：已批准。**
 
 ## 13. 用户审批区
 
@@ -427,3 +427,8 @@ docs/development/05-workspace-security-spec.md
 3. 内部 symlink 可读、所有最终 symlink 禁止写是否合适。
 4. writable 父目录预存在、私有 snapshot 和二次复验是否足以作为阶段 06 前置。
 5. 是否批准阶段 05 Summary，从而只解锁阶段 06 的只读观察与 Spec。
+
+审批记录：
+
+- 2026-08-27：用户明确回复“批准”，阶段 05 Summary 获批。
+- 解锁范围：阶段 05 正式完成；只解锁阶段 06 的只读观察与 `06-local-tools-spec.md`，不解锁阶段 06 Task 或开发。
