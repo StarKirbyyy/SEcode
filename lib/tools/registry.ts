@@ -34,6 +34,16 @@ import { sha256Bytes } from "./file-content";
 const localToolNameSet = new Set<string>(LOCAL_TOOL_NAMES);
 const preparedInvocations = new WeakSet<object>();
 
+export function isPreparedLocalToolInvocation(
+  value: unknown,
+): value is PreparedLocalToolInvocation {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    preparedInvocations.has(value)
+  );
+}
+
 function isLocalToolName(value: string): value is LocalToolName {
   return localToolNameSet.has(value);
 }
@@ -208,7 +218,7 @@ export async function executePreparedLocalTool(
   if (
     invocation === null ||
     typeof invocation !== "object" ||
-    !preparedInvocations.has(invocation)
+    !isPreparedLocalToolInvocation(invocation)
   ) {
     return createToolFailure(
       "TOOL_ARGUMENTS_INVALID",

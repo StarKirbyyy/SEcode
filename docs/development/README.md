@@ -13,7 +13,7 @@
 | 04 | 模型协议层 | 已批准 | [Spec（已批准）](./04-model-protocol-spec.md) / [Task（已批准）](./04-model-protocol-tasks.md) / [Summary（已批准）](./04-model-protocol-summary.md) |
 | 05 | 工作区安全层 | 已批准 | [Spec（已批准）](./05-workspace-security-spec.md) / [Task（已批准）](./05-workspace-security-tasks.md) / [Summary（已批准）](./05-workspace-security-summary.md) |
 | 06 | 本地工具系统 | 已批准 | [Spec（已批准）](./06-local-tools-spec.md) / [Task（已批准）](./06-local-tools-tasks.md) / [Summary（已批准）](./06-local-tools-summary.md) |
-| 07 | 风险分级与审批 | Spec 待用户审批 | [Spec（待用户审批）](./07-risk-approval-spec.md) / Task / Summary 待生成 |
+| 07 | 风险分级与审批 | Summary 待用户审批 | [Spec（已批准）](./07-risk-approval-spec.md) / [Task 修订 1（已批准）](./07-risk-approval-tasks.md) / [Summary（待用户审批）](./07-risk-approval-summary.md) |
 | 08 | JSONL 事件存储 | 待开始 | Spec / Task / Summary 待生成 |
 | 09 | Agent 状态机 | 待开始 | Spec / Task / Summary 待生成 |
 | 10 | 上下文管理 | 待开始 | Spec / Task / Summary 待生成 |

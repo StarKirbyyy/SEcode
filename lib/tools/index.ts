@@ -13,10 +13,7 @@ export {
   type RawSearchTextArguments,
   type RawWriteFileArguments,
 } from "./schemas";
-export {
-  executePreparedLocalTool,
-  prepareLocalToolCall,
-} from "./registry";
+export { prepareLocalToolCall } from "./registry";
 export {
   DEFAULT_DIRECTORY_DEPTH,
   DEFAULT_DIRECTORY_ENTRIES,

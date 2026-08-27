@@ -4,10 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { JsonObject, ToolCall } from "@/lib/domain";
-import {
-  executePreparedLocalTool,
-  prepareLocalToolCall,
-} from "@/lib/tools";
+import { prepareLocalToolCall } from "@/lib/tools";
+import { executePreparedLocalTool } from "@/lib/tools/registry";
 import { createWorkspaceHandle, type WorkspaceHandle } from "@/lib/workspace";
 
 const PREFIX = "secode-tools-test-";

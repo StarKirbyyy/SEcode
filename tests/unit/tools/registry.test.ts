@@ -4,11 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  executePreparedLocalTool,
   prepareLocalToolCall,
   type PreparedLocalToolInvocation,
 } from "@/lib/tools";
 import * as publicTools from "@/lib/tools";
+import { executePreparedLocalTool } from "@/lib/tools/registry";
 
 import {
   cleanupAllToolFixtures,
@@ -24,6 +24,8 @@ describe("local tool registry", () => {
     expect(publicTools).not.toHaveProperty("nativeToolDependencies");
     expect(publicTools).not.toHaveProperty("atomicWriteWorkspaceFile");
     expect(publicTools).not.toHaveProperty("isSensitiveWorkspacePath");
+    expect(publicTools).not.toHaveProperty("executePreparedLocalTool");
+    expect(publicTools).not.toHaveProperty("isPreparedLocalToolInvocation");
   });
 
   it("returns structured failures for unknown and invalid tools", () => {
@@ -56,7 +58,7 @@ describe("local tool registry", () => {
     expect(result.error?.code).toBe("TOOL_ARGUMENTS_INVALID");
   });
 
-  it("executes a public barrel list-read-create-replace flow", async () => {
+  it("executes an internal list-read-create-replace regression flow", async () => {
     const fixture = await createToolFixture();
     await fs.writeFile(path.join(fixture.project, "a.txt"), "before");
     const read = prepareLocalToolCall(toolCall("read_file", { path: "a.txt" }));
