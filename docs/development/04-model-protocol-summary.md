@@ -2,11 +2,11 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：待用户审批。
+- 当前状态：已批准。
 - 依据 Spec：[04-model-protocol-spec.md](./04-model-protocol-spec.md)，已获用户批准。
 - 依据 Task：[04-model-protocol-tasks.md](./04-model-protocol-tasks.md)，已获用户批准。
 - 当前子阶段：开发、测试、整体验证与反思已完成。
-- 后续门禁：本 Summary 获批前不得开始阶段 05 的只读观察，不得生成阶段 05 Spec。
+- 后续门禁：阶段 05 已解锁只读观察；其 Spec 获批前不得生成 Task 或开发工作区安全层。
 
 审批过程：
 
@@ -42,7 +42,7 @@
 | T04-07 公共入口与环境示例 | 完成 | `lib/model/index.ts`、`.env.example` | barrel 与空 Key 测试 |
 | T04-08 模型测试矩阵 | 完成 | `tests/unit/model/**` | 5 个套件、60 个测试通过 |
 | T04-09 整体验证与审查 | 完成 | 本文第 7、8 节 | 全部门禁退出码 0 |
-| T04-10 Summary | 完成 | 本文档、开发索引 | 内部门禁通过，等待用户审批 |
+| T04-10 Summary | 完成 | 本文档、开发索引 | 内部门禁通过，用户已批准 |
 
 ## 4. 详细开发过程
 
@@ -305,7 +305,7 @@ Agent 不应从内部路径导入 mapper、accumulator、server definition 或 c
 - [x] 未访问真实模型、安装 SDK、实现后续阶段或修改未经批准文件。
 - [x] 开发索引已更新为“阶段 04 Summary 待用户审批”。
 
-**Summary 内部门禁：通过。当前状态：待用户审批。**
+**Summary 内部门禁：通过。当前状态：已批准。**
 
 ## 12. 用户审批区
 
@@ -316,3 +316,10 @@ Agent 不应从内部路径导入 mapper、accumulator、server definition 或 c
 3. 3 次总尝试、首个 data 后不重试、120 秒 attempt timeout 是否符合预期。
 4. HTTP 错误预览、URL 安全、大小限制和公共导出边界是否充分。
 5. 是否批准阶段 04 Summary，从而只解锁阶段 05 的只读观察与 Spec 编写。
+
+## 13. 用户审批记录
+
+- 审批结果：阶段 04 Summary 已获用户批准。
+- 阶段结果：阶段 04 正式完成。
+- 解锁动作：允许开始阶段 05 的只读观察并生成工作区安全层 Spec。
+- 仍然禁止：阶段 05 Spec 获批前不得生成 Task 或编写工作区安全代码。

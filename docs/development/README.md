@@ -10,8 +10,8 @@
 | 01 | 需求、范围与验收标准 | 已批准 | [01-requirements.md](./01-requirements.md) |
 | 02 | 工程基线 | 已批准（旧流程） | [02-engineering-baseline.md](./02-engineering-baseline.md) |
 | 03 | 领域类型与事件协议 | 已批准 | [Spec（已批准）](./03-domain-protocol-spec.md) / [Task 修订 1（已批准）](./03-domain-protocol-tasks.md) / [Summary（已批准）](./03-domain-protocol-summary.md) |
-| 04 | 模型协议层 | Summary 待用户审批 | [Spec（已批准）](./04-model-protocol-spec.md) / [Task（已批准）](./04-model-protocol-tasks.md) / [Summary](./04-model-protocol-summary.md) |
-| 05 | 工作区安全层 | 待开始 | Spec / Task / Summary 待生成 |
+| 04 | 模型协议层 | 已批准 | [Spec（已批准）](./04-model-protocol-spec.md) / [Task（已批准）](./04-model-protocol-tasks.md) / [Summary（已批准）](./04-model-protocol-summary.md) |
+| 05 | 工作区安全层 | Summary 待用户审批 | [Spec（已批准）](./05-workspace-security-spec.md) / [Task（已批准）](./05-workspace-security-tasks.md) / [Summary](./05-workspace-security-summary.md) |
 | 06 | 本地工具系统 | 待开始 | Spec / Task / Summary 待生成 |
 | 07 | 风险分级与审批 | 待开始 | Spec / Task / Summary 待生成 |
 | 08 | JSONL 事件存储 | 待开始 | Spec / Task / Summary 待生成 |
