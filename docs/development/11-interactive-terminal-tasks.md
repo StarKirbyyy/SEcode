@@ -2,14 +2,14 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：实施完成，Summary 待用户审批
+- 当前状态：已批准，阶段 11 正式完成
 - 生成日期：2026-08-28
 - 已批准 Spec：[11-interactive-terminal-spec.md](./11-interactive-terminal-spec.md)
 - Spec 审批记录：用户于 2026-08-28 明确批准
 - Task 审批记录：用户于 2026-08-28 明确批准
-- 当前允许：审阅阶段 11 Summary
-- 当前禁止：继续修改实现、超出白名单、调用真实模型、修改阶段 03–10 核心协议或进入阶段 12
-- 下一步门禁：用户批准阶段 11 Summary 后，阶段 11 才正式完成并解锁阶段 12 观察
+- 当前允许：阶段 12 只读观察与 Spec 审阅
+- 当前禁止：未经阶段 12 Spec/Task 审批继续修改实现、超出白名单、修改阶段 03–10 核心协议或进入阶段 13
+- 下一步门禁：阶段 12 Spec 获批后只解锁阶段 12 Task 编写
 
 审批链：
 
@@ -17,7 +17,7 @@
 阶段 11 Spec（已批准）
   → 本 Task（已批准）
   → T11-00～T11-14（已完成）
-  → 阶段 11 Summary（待用户审批）
+  → 阶段 11 Summary（已批准）
 ```
 
 ## 2. 任务目标
@@ -1135,11 +1135,11 @@ docs/development/README.md
 ## 28. 实施完成记录
 
 - T11-00～T11-13 已于 2026-08-28 按批准顺序完成。
-- T11-14 已生成 [11-interactive-terminal-summary.md](./11-interactive-terminal-summary.md)，并把索引更新为“Summary 待用户审批”。
+- T11-14 已生成并完成 [11-interactive-terminal-summary.md](./11-interactive-terminal-summary.md) 审批，索引已更新为“阶段 11 已批准”。
 - 实际变更严格位于第 4 节白名单：14 个生产终端文件、15 个测试/helper 文件、`package.json`、`pnpm-lock.yaml` 和本阶段文档。
 - 唯一新增直接依赖为 `tsx 4.23.12`，唯一新增 script 为 `agent`。
 - 最终 terminal 精确测试：13 个测试文件、66 项测试通过。
 - 最终全仓测试：74 个测试文件、599 项测试通过。
 - `pnpm lint` 0 warning，`pnpm typecheck`、`pnpm build`、`pnpm agent -- --help`、`pnpm install --frozen-lockfile` 和 `git diff --check` 全部通过。
 - 未调用真实 DeepSeek/LongCat、未修改真实用户项目、未进入阶段 12/API/UI。
-- 当前门禁：只允许用户审阅 Summary；批准前不得开始阶段 12。
+- Summary 已于 2026-08-28 获用户批准；阶段 11 正式完成，仅解锁阶段 12 的只读观察与 Spec 编写。

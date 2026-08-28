@@ -2,14 +2,14 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：待用户审批
+- 当前状态：已批准
 - 完成日期：2026-08-28
 - 已批准 Spec：[11-interactive-terminal-spec.md](./11-interactive-terminal-spec.md)
 - 已批准 Task：[11-interactive-terminal-tasks.md](./11-interactive-terminal-tasks.md)
 - Spec 审批：用户于 2026-08-28 批准
 - Task 审批：用户于 2026-08-28 批准
-- Summary 审批：尚未批准
-- 当前门禁：只允许审阅本 Summary；阶段 12 观察、真实模型验收、HTTP 和 UI 均未解锁
+- Summary 审批：用户于 2026-08-28 批准
+- 当前门禁：阶段 11 已正式完成；只解锁阶段 12 的“观察 → Spec”，阶段 12 Task、开发、HTTP 和 UI 均未解锁
 
 审批链：
 
@@ -17,8 +17,8 @@
 阶段 11 Spec（已批准）
   → 阶段 11 Task（已批准）
   → T11-00～T11-13（已完成）
-  → T11-14 本 Summary（待审批）
-  → 阶段 12 观察（未解锁）
+  → T11-14 本 Summary（已批准）
+  → 阶段 12 观察与 Spec（已解锁）
 ```
 
 ## 2. 完成结论
@@ -71,7 +71,7 @@ pnpm agent
 | T11-11 进程与安全 | 已完成 | 参数化 pnpm/tsx 子进程、源码/依赖扫描 | help 0、非 TTY/非法 argv 2、零数据副作用 |
 | T11-12 人工测试准备 | 已完成 | 本文第 8 节低风险手动步骤 | 与最终 parser/help 对照 |
 | T11-13 全量与反思 | 已完成 | 全仓门禁、范围/残留/secret 审计、竞态修正 | 599 tests、0 warning、build/frozen/diff |
-| T11-14 Summary | 已完成，待审批 | 本 Summary、Task 实施记录、索引状态 | 当前用户审批门禁 |
+| T11-14 Summary | 已完成，已批准 | 本 Summary、Task 实施记录、索引状态 | 用户于 2026-08-28 批准 |
 
 任务严格按批准顺序实施，没有进入真实双模型、Route Handler 或 UI。
 
@@ -416,8 +416,4 @@ unset DEEPSEEK_API_KEY LONGCAT_API_KEY OPENAI_COMPAT_API_KEY
 5. 第 8 节手动测试步骤是否清晰且风险可控。
 6. 是否批准本 Summary，并解锁阶段 12 的“观察 → Spec”步骤。
 
-在用户明确批准前：
-
-- 阶段 11 不视为正式完成。
-- 不开始阶段 12 观察或生成阶段 12 Spec。
-- 不调用真实模型、不操作真实项目、不开发 API/UI。
+用户已于 2026-08-28 明确批准本 Summary。阶段 11 正式完成，仅解锁阶段 12 的只读观察与 Spec 编写；阶段 12 Task、开发修正、Route Handler 和 UI 仍需分别等待后续审批。
