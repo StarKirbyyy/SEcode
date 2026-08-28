@@ -1,0 +1,35 @@
+export { EventStoreError } from "./errors";
+export { createJsonlEventStore } from "./event-store";
+export {
+  CreateStoredSessionInputSchema,
+  DurableEventDraftSchema,
+  EventPageQuerySchema,
+  JsonlEventStoreOptionsSchema,
+  RecentWorkspaceQuerySchema,
+  StoredSessionMetadataSchema,
+  type CreateStoredSessionInput,
+  type EventPageQuery,
+  type JsonlEventStoreOptions,
+  type RecentWorkspaceQuery,
+  type StoredSessionMetadata,
+} from "./schemas";
+export {
+  DEFAULT_DATA_DIRECTORY_NAME,
+  DEFAULT_EVENT_PAGE_LIMIT,
+  DEFAULT_RECENT_WORKSPACE_LIMIT,
+  EVENT_STORE_ERROR_CODES,
+  MAX_EVENT_LINE_BYTES,
+  MAX_EVENT_PAGE_LIMIT,
+  MAX_RECENT_WORKSPACE_LIMIT,
+  MAX_SESSION_METADATA_BYTES,
+  SESSION_EVENTS_FILE_NAME,
+  SESSION_METADATA_FILE_NAME,
+  STORAGE_VERSION,
+  type CreatedStoredSession,
+  type DurableEventDraft,
+  type EventPage,
+  type EventStoreErrorCode,
+  type JsonlEventStore,
+  type SessionInspection,
+  type SessionRecoveryReport,
+} from "./types";

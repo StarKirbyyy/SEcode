@@ -2,7 +2,7 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：待用户审批
+- 当前状态：已批准
 - 完成日期：2026-08-27
 - 批准的 Spec：[07-risk-approval-spec.md](./07-risk-approval-spec.md)
 - 批准的 Task：[07-risk-approval-tasks.md](./07-risk-approval-tasks.md)
@@ -494,9 +494,9 @@ Route (app)
 - [x] 反思和后续阶段约束已记录。
 - [x] 开发索引更新为“Summary 待用户审批”。
 
-**Summary 内部门禁：通过。当前状态：待用户审批。**
+**Summary 内部门禁：通过。当前状态：已批准。**
 
-阶段 07 尚未正式完成；用户批准前不得开始阶段 08 观察或创建阶段 08 Spec。
+阶段 07 已正式完成，允许开始阶段 08 只读观察与 Spec。
 
 ## 14. 用户审批区
 
@@ -512,6 +512,6 @@ Route (app)
 
 ## 15. 用户审批记录
 
-- 审批结果：待用户审批。
-- 批准后解锁：阶段 08 只读观察和 `08-jsonl-event-store-spec.md`。
+- 审批结果：阶段 07 Summary 已获用户批准，阶段 07 正式完成。
+- 解锁动作：允许阶段 08 只读观察和生成 `08-jsonl-event-store-spec.md`。
 - 仍然禁止：阶段 08 Spec 获批前不得生成 Task 或实现 JSONL 存储。
