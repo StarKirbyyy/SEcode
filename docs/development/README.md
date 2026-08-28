@@ -18,8 +18,8 @@
 | 09 | Agent 状态机 | 已批准 | [Spec（已批准）](./09-agent-state-machine-spec.md) / [Task（已批准）](./09-agent-state-machine-tasks.md) / [Summary（已批准）](./09-agent-state-machine-summary.md) |
 | 10 | 上下文管理 | 已批准 | [Spec（已批准）](./10-context-management-spec.md) / [Task（已批准）](./10-context-management-tasks.md) / [Summary（已批准）](./10-context-management-summary.md) |
 | 11 | 可交互终端入口 | 已批准 | [Spec（已批准）](./11-interactive-terminal-spec.md) / [Task（已批准）](./11-interactive-terminal-tasks.md) / [Summary（已批准）](./11-interactive-terminal-summary.md) |
-| 12 | 终端测试与核心验收 | 进度 Summary 待审批；LongCat 外部阻塞 | [Spec（已批准）](./12-terminal-core-acceptance-spec.md) / [Task（原版与 R1 均已批准）](./12-terminal-core-acceptance-tasks.md) / [进度 Summary（待审批）](./12-terminal-core-acceptance-summary.md) |
-| 13 | Next.js Route Handlers | 待开始 | Spec / Task / Summary 待生成 |
+| 12 | 终端测试与核心验收 | 进度 Summary 已批准；LongCat 真实冒烟经用户明确跳过，状态仍为外部阻塞 | [Spec（已批准）](./12-terminal-core-acceptance-spec.md) / [Task（原版与 R1 均已批准）](./12-terminal-core-acceptance-tasks.md) / [进度 Summary 与范围豁免](./12-terminal-core-acceptance-summary.md) |
+| 13 | Next.js Route Handlers | Summary 待用户审批 | [Spec（已批准）](./13-nextjs-route-handlers-spec.md) / [Task（已批准，实施完成）](./13-nextjs-route-handlers-tasks.md) / [Summary（待审批）](./13-nextjs-route-handlers-summary.md) |
 | 14 | 中文工作台与 UI E2E | 待开始 | Spec / Task / Summary 待生成 |
 | 15 | 文档、视频与最终提交 | 待开始 | Spec / Task / Summary 待生成 |
 

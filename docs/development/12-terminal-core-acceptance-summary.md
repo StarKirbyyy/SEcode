@@ -2,10 +2,10 @@
 
 ## 1. 状态与审批链
 
-- 当前状态：进度 Summary 待用户审批。
+- 当前状态：进度 Summary 已获用户批准；用户已明确豁免 LongCat 补测并解锁阶段 13。
 - 阶段状态：12 个场景通过；LongCat-compatible 真实冒烟为 `blocked_external`。
-- 完成声明：不成立。缺少 LongCat 端点时不能标记阶段 12 完成。
-- 阶段 13：未开始，当前仍禁止开始。
+- 完成声明：双 provider 验收仍不成立；本范围豁免不把 LongCat 写成通过。
+- 阶段 13：已由用户例外解锁，只允许按三级门禁开始只读观察与 Spec。
 - 生成日期：2026-08-28。
 
 ```text
@@ -14,9 +14,9 @@
   → T12-13 首次失败与只读诊断
   → Task 实施修订 R1（已批准）
   → R1 实施与重验（通过）
-  → 本进度 Summary（待审批）
-  → LongCat 阻塞解除后补测
-  → 阶段 12 最终门禁（尚未到达）
+  → 本进度 Summary（已批准）
+  → 用户明确跳过 LongCat 测试（范围豁免）
+  → 阶段 13 只读观察与 Spec（已解锁）
 ```
 
 - [阶段 12 Spec](./12-terminal-core-acceptance-spec.md)
@@ -247,7 +247,7 @@ package/lock hash 与 T12-00 一致；package/lock diff 为 0；`.only/.skip`、
 
 阶段 13 可继承已通过的 Agent runtime、六工具、workspace 安全、approval/cancel/resume、JSONL、compaction 事件和脱敏 profile。test-only server 只能作为测试资产，不能进入 production app。
 
-当前固定门禁：
+原固定门禁为：
 
 ```text
 LongCat-compatible 真实冒烟未完成
@@ -256,14 +256,29 @@ LongCat-compatible 真实冒烟未完成
 → Route Handler、NDJSON 和 UI 仍禁止开发
 ```
 
-## 16. 用户审批项
+用户随后于 2026-08-28 明确指示“跳过 longcat 测试，直接进行阶段 13”。该指令作为对上述阶段推进条件的范围豁免处理：
 
-请审阅并确认：
+- A12-03 继续保持 `blocked_external`，不改写为 `passed`。
+- 阶段 12 仍不声明“双 provider 真实验收完成”。
+- 阶段 13 的只读观察与 Spec 编写已解锁。
+- Route Handler 实施仍需阶段 13 Spec 和 Task 分别获得用户批准；UI 仍属于阶段 14。
 
-1. 本 Summary 是否准确记录阶段 12 已完成的工作。
-2. A12-10 原失败、R1 诊断和修正是否保留充分。
-3. LongCat `blocked_external` 是否准确，且当前不能声明阶段完成。
-4. 临时 fixture/data/evidence 是否继续保留。
-5. 是否批准本进度 Summary。
+## 16. 用户审批记录
 
-即使本进度 Summary 获批，LongCat 阻塞仍然存在；只有完成 LongCat-compatible 真实冒烟，或另行审批修改双 provider 完成条件，阶段 13 才可能解锁。
+用户已于 2026-08-28 批准本进度 Summary，并确认：
+
+1. 本 Summary 准确记录阶段 12 已执行的工作。
+2. A12-10 原失败、R1 诊断和修正记录充分保留。
+3. LongCat `blocked_external` 状态准确，当前不能声明阶段完成。
+4. 临时 fixture/data/evidence 继续保留。
+5. 本进度 Summary 已批准。
+
+本进度 Summary 的批准本身没有解除 LongCat 阻塞；其后的“跳过 LongCat 测试并进入阶段 13”明确指令构成了下节记录的另行范围审批。
+
+## 17. 后续范围豁免记录
+
+- 记录日期：2026-08-28。
+- 用户决定：跳过 LongCat-compatible 真实端点测试，直接进入阶段 13。
+- 证据语义：这是进度门禁豁免，不是测试成功，也不改变 FR-009 的产品支持范围。
+- 已接受限制：最终材料必须如实说明 LongCat 适配器有自动测试和可配置能力，但未完成真实端点冒烟。
+- 解锁范围：仅解锁阶段 13 的标准生命周期；当前首先生成阶段 13 Spec 并等待审批。

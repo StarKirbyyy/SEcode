@@ -2,13 +2,13 @@
 
 ## 1. 文档状态与审批链
 
-- 当前状态：T12-00～T12-17 已执行；进度 Summary 待用户审批；LongCat 外部阻塞
+- 当前状态：T12-00～T12-17 已执行；进度 Summary 已批准；LongCat 外部阻塞由用户明确豁免为后续限制
 - 生成日期：2026-08-28
 - 已批准 Spec：[12-terminal-core-acceptance-spec.md](./12-terminal-core-acceptance-spec.md)
 - Spec 审批记录：用户于 2026-08-28 明确批准
-- 当前允许：用户审阅进度 Summary；保留临时证据；等待 LongCat-compatible 端点
-- 当前禁止：超出白名单、未经修订审批修改产品代码、安装依赖或进入阶段 13
-- 下一步门禁：用户审批本进度 Summary；即使获批，LongCat 冒烟完成前仍禁止阶段 13
+- 当前允许：保留临时证据；按阶段 13 的三级门禁开展只读观察与 Spec
+- 当前禁止：把 LongCat 写成通过、超出阶段 13 当前 Spec 门禁、安装依赖或提前开发 Route Handler/UI
+- 下一步门禁：阶段 13 Spec 必须先获用户批准，才能生成阶段 13 Task
 
 审批链：
 
@@ -19,7 +19,7 @@
   → T12-13 第一次人工 compaction（失败并停止）
   → 实施修订 R1（已批准并完成）
   → T12-13 新 Session 重验（已通过）
-  → 阶段 12 进度 Summary（已生成，待审批）
+  → 阶段 12 进度 Summary（已批准）
 ```
 
 ## 1.1 实施修订 R1：test-only 摘要请求兼容（已批准并完成）
@@ -1217,7 +1217,7 @@ docs/development/README.md
 - [x] 无 `.only`/永久 skip/降断言/新增依赖/后台进程/仓库残留。
 - [x] Summary 如实记录失败、重试、阻塞、偏差和临时目录状态。
 - [x] 开发索引更新为正确门禁状态。
-- [x] 阶段 13 未开始。
+- [x] 阶段 13 在原 Task 实施期间未开始；后由用户范围豁免单独解锁。
 
 ## 31. Task 内部门禁
 
@@ -1255,5 +1255,6 @@ docs/development/README.md
 - 原 Task 审批结果：用户已于 2026-08-28 批准阶段 12 Task。
 - 原 Task 批准解锁：严格按 T12-00～T12-17 创建临时 fixture、test-only server，执行自动/人工验收并生成 Summary。
 - 实施修订 R1 审批结果：用户已于 2026-08-28 批准；已解锁 R1-01～R1-06。
-- 当前仍禁止：任何 production 修改、依赖变更、未批准真实调用、Route Handler、NDJSON、UI 或阶段 13。
+- 后续决定：用户于 2026-08-28 明确跳过 LongCat 测试并解锁阶段 13；A12-03 仍保持 `blocked_external`。
+- 当前仍禁止：把 LongCat 声明为通过、未经阶段 13 Spec/Task 批准实施 Route Handler 或 NDJSON、开发 UI、依赖变更或未批准真实调用。
 - 发现产品缺陷时：先按 T12-14 分类，修订本 Task 或回到所属 Spec 后重新等待审批。
