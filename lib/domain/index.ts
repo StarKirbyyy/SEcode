@@ -33,6 +33,7 @@ export {
   type EventId,
   type JsonObject,
   type JsonValue,
+  type PlanId,
   type RunId,
   type SessionId,
   type ToolCallId,

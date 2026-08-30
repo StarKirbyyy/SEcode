@@ -252,6 +252,61 @@ describe("chat completion accumulator", () => {
     });
   });
 
+  it("keeps only valid siblings in provider continuation", async () => {
+    const longcat = definition("longcat");
+    const completion = await accumulateChatCompletion(
+      events([
+        chunk(
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: "bad-provider-id",
+                function: { name: "run_process", arguments: "{bad-json" },
+              },
+              {
+                index: 1,
+                id: "valid-provider-id",
+                function: { name: "read_file", arguments: { path: "safe.ts" } },
+              },
+            ],
+          },
+          "tool_calls",
+        ),
+      ]),
+      { definition: longcat, continuationState: stateFor(longcat) },
+    );
+    const valid = completion.toolCalls[1];
+    expect(valid?.ok).toBe(true);
+    if (!valid?.ok) throw new Error("expected valid sibling");
+
+    const next = buildChatRequest({
+      profileId: "longcat",
+      signal: new AbortController().signal,
+      continuation: completion.continuation,
+      messages: [
+        { role: "user", content: "继续" },
+        {
+          role: "assistant",
+          content: null,
+          toolCalls: [valid.call],
+        },
+        {
+          role: "tool",
+          toolCallId: valid.call.id,
+          name: valid.call.name,
+          content: "读取成功",
+        },
+      ],
+      tools: [],
+    }, longcat);
+    const serialized = JSON.stringify(next.body);
+    expect(serialized).toContain("valid-provider-id");
+    expect(serialized).toContain('"arguments":{"path":"safe.ts"}');
+    expect(serialized).not.toContain("bad-provider-id");
+    expect(serialized).not.toContain("{bad-json");
+  });
+
   it("accepts a usage-only tail chunk", async () => {
     const completion = await accumulateChatCompletion(
       events([
@@ -265,6 +320,70 @@ describe("chat completion accumulator", () => {
       { definition: definition(), continuationState: stateFor() },
     );
     expect(completion.usage).toEqual({ promptTokens: 3, totalTokens: 4 });
+  });
+
+  it("normalizes DeepSeek hit/miss and compatible cached prompt usage", async () => {
+    const deepseek = await accumulateChatCompletion(
+      events([
+        chunk({ content: "完成" }, "stop", {
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 2,
+            total_tokens: 102,
+            prompt_cache_hit_tokens: 80,
+            prompt_cache_miss_tokens: 20,
+          },
+        }),
+      ]),
+      { definition: definition(), continuationState: stateFor() },
+    );
+    expect(deepseek.usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 2,
+      totalTokens: 102,
+      cachedPromptTokens: 80,
+      cacheMissPromptTokens: 20,
+    });
+
+    const generic = definition("generic");
+    const compatible = await accumulateChatCompletion(
+      events([
+        chunk({ content: "完成" }, "stop", {
+          usage: {
+            prompt_tokens: 50,
+            completion_tokens: 2,
+            total_tokens: 52,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        }),
+      ]),
+      { definition: generic, continuationState: stateFor(generic) },
+    );
+    expect(compatible.usage).toEqual({
+      promptTokens: 50,
+      completionTokens: 2,
+      totalTokens: 52,
+      cachedPromptTokens: 30,
+    });
+  });
+
+  it("rejects conflicting provider cache usage instead of guessing", async () => {
+    await expect(
+      errorCode(
+        accumulateChatCompletion(
+          events([
+            chunk({ content: "完成" }, "stop", {
+              usage: {
+                prompt_tokens: 100,
+                prompt_cache_hit_tokens: 80,
+                prompt_tokens_details: { cached_tokens: 79 },
+              },
+            }),
+          ]),
+          { definition: definition(), continuationState: stateFor() },
+        ),
+      ),
+    ).resolves.toBe("MODEL_PROTOCOL_ERROR");
   });
 
   it.each([

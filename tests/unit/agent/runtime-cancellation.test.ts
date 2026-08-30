@@ -201,7 +201,7 @@ describe("Agent cancellation", () => {
     const runtime = createAgentRuntimeWithDependencies(
       {
         eventStore: fixture.store,
-        modelClient: new QueueModelClient([createTextCompletion("streamed")]),
+        modelClient: new QueueModelClient([createTextCompletion("流式内容")]),
         contextProvider: createStaticContextProvider(),
       },
       { ...nativeAgentRuntimeDependencies, randomUUID: () => RUN_ID },
@@ -279,6 +279,7 @@ describe("Agent durable commit failures", () => {
     return {
       initialize: store.initialize.bind(store),
       createSession: store.createSession.bind(store),
+      deleteSession: store.deleteSession.bind(store),
       getSessionMetadata: store.getSessionMetadata.bind(store),
       listSessions: store.listSessions.bind(store),
       listRecentWorkspaces: store.listRecentWorkspaces.bind(store),

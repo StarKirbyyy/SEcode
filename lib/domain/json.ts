@@ -49,3 +49,4 @@ export type RunId = string;
 export type EventId = string;
 export type ToolCallId = string;
 export type ApprovalId = string;
+export type PlanId = string;

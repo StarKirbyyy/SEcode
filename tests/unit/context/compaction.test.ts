@@ -12,6 +12,23 @@ import {
 import { manyCompletedRuns } from "./helpers";
 
 describe("context compaction selection", () => {
+  it("compacts a large 1M-profile history at the 64K soft trigger", () => {
+    const history = projectContextHistory(manyCompletedRuns(12, 12_000));
+    const baseline = estimateContextTokens(renderContextMessages({
+      history,
+      workspacePath: "/tmp/workspace",
+      rounds: history.rounds,
+    }), LOCAL_TOOL_DEFINITIONS, 1_000_000);
+    expect(baseline.estimatedTokens).toBeGreaterThanOrEqual(64_000);
+    expect(baseline.estimatedTokens).toBeLessThan(baseline.inputBudgetTokens);
+    expect(selectContextCompaction({
+      history,
+      workspacePath: "/tmp/workspace",
+      contextWindow: 1_000_000,
+      tools: LOCAL_TOOL_DEFINITIONS,
+    })).toBeDefined();
+  });
+
   it("does not compact below the 75 percent budget", () => {
     const history = projectContextHistory(manyCompletedRuns(9));
     expect(selectContextCompaction({
@@ -63,12 +80,14 @@ describe("context compaction selection", () => {
       workspacePath: "/tmp/workspace",
       rounds: history.rounds,
     });
-    const full = estimateContextTokens(fullMessages, LOCAL_TOOL_DEFINITIONS, 22_000);
+    // V5 固定提示词与 readiness 工具定义增加了合法开销；窗口仍需同时满足
+    // “完整历史触发压缩”和“最近八回合可完整保留”两个夹具前提。
+    const full = estimateContextTokens(fullMessages, LOCAL_TOOL_DEFINITIONS, 25_000);
     expect(full.estimatedTokens).toBeGreaterThanOrEqual(full.inputBudgetTokens);
     const selection = selectContextCompaction({
       history,
       workspacePath: "/tmp/workspace",
-      contextWindow: 22_000,
+      contextWindow: 25_000,
       tools: LOCAL_TOOL_DEFINITIONS,
     });
     expect(selection).toBeDefined();
@@ -82,11 +101,21 @@ describe("context compaction selection", () => {
 
   it("fails rather than splitting a hard-retained set", () => {
     const history = projectContextHistory(manyCompletedRuns(8, 10_000));
-    expect(() => selectContextCompaction({
-      history,
-      workspacePath: "/tmp/workspace",
-      contextWindow: 10_000,
-      tools: LOCAL_TOOL_DEFINITIONS,
-    })).toThrow("硬保留");
+    try {
+      selectContextCompaction({
+        history,
+        workspacePath: "/tmp/workspace",
+        contextWindow: 10_000,
+        tools: LOCAL_TOOL_DEFINITIONS,
+      });
+      throw new Error("expected context budget failure");
+    } catch (cause) {
+      expect(cause).toMatchObject({
+        error: {
+          code: "CONTEXT_BUDGET_EXCEEDED",
+          details: { reason: "projected_recent_rounds_over_budget" },
+        },
+      });
+    }
   });
 });

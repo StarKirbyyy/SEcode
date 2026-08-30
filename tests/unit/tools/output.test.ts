@@ -14,7 +14,8 @@ describe("tool output limiting", () => {
   it("keeps UTF-8 head and tail within the limit", () => {
     const result = limitToolOutput("头".repeat(30_000) + "TAIL");
     expect(result.truncated).toBe(true);
-    expect(result.value).toContain("TRUNCATED");
+    expect(result.value).toContain("已截断");
+    expect(result.value).not.toContain("TRUNCATED");
     expect(result.value.endsWith("TAIL")).toBe(true);
     expect(result.value).not.toContain("�");
     expect(utf8ByteLength(result.value)).toBeLessThanOrEqual(

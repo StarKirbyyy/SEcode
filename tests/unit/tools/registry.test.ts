@@ -42,6 +42,22 @@ describe("local tool registry", () => {
     }
   });
 
+  it("deep-freezes normalized readiness arguments", () => {
+    const prepared = prepareLocalToolCall(toolCall("run_process", {
+      program: "pnpm",
+      args: ["dev"],
+      readiness: { url: "http://127.0.0.1:43123/health" },
+    }));
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok || prepared.invocation.name !== "run_process") return;
+    expect(Object.isFrozen(prepared.invocation.arguments.readiness)).toBe(true);
+    expect(prepared.invocation.arguments.readiness).toEqual({
+      url: "http://127.0.0.1:43123/health",
+      expectedStatus: 200,
+      timeoutMs: 120_000,
+    });
+  });
+
   it("rejects a forged prepared invocation", async () => {
     const fixture = await createToolFixture();
     const forged = {

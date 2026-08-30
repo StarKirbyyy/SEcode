@@ -27,6 +27,7 @@ import {
   MAX_MODEL_REASONING_BYTES,
   MAX_TOOL_ARGUMENT_BYTES,
   createModelError,
+  type ModelLayerError,
   type ModelCompletion,
   type ModelUsage,
   type NormalizedModelToolCall,
@@ -60,6 +61,11 @@ const WireUsageSchema = z.object({
   prompt_tokens: z.int().nonnegative().optional(),
   completion_tokens: z.int().nonnegative().optional(),
   total_tokens: z.int().nonnegative().optional(),
+  prompt_cache_hit_tokens: z.int().nonnegative().optional(),
+  prompt_cache_miss_tokens: z.int().nonnegative().optional(),
+  prompt_tokens_details: z
+    .object({ cached_tokens: z.int().nonnegative().optional() })
+    .optional(),
   completion_tokens_details: z
     .object({ reasoning_tokens: z.int().nonnegative().optional() })
     .optional(),
@@ -69,6 +75,18 @@ const WireChunkSchema = z.object({
   id: z.string().max(1_024).optional(),
   choices: z.array(WireChoiceSchema).max(2),
   usage: WireUsageSchema.nullable().optional(),
+});
+
+const WireErrorEnvelopeSchema = z.object({
+  error: z.object({
+    code: z.union([z.string().max(128), z.number().int()]).optional(),
+    type: z.string().max(128).optional(),
+    status: z.union([z.string().max(128), z.number().int()]).optional(),
+    message: z.string().max(65_536).optional(),
+  }).refine(
+    (error) => error.code !== undefined || error.type !== undefined || error.status !== undefined,
+    "provider error classifier missing",
+  ),
 });
 
 interface PendingToolCall {
@@ -85,6 +103,57 @@ export interface AccumulateChatOptions {
   definition: ServerModelProfileDefinition;
   continuationState: InternalContinuationState;
   onTextDelta?: (content: string) => void | Promise<void>;
+  onSemanticOutput?: () => void;
+}
+
+function normalizedProviderClassifier(value: string | number): string {
+  return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+}
+
+function providerEnvelopeError(raw: unknown): ModelLayerError | undefined {
+  if (raw !== null && typeof raw === "object" && "choices" in raw) return undefined;
+  const parsed = WireErrorEnvelopeSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const classifiers = [
+    parsed.data.error.code,
+    parsed.data.error.type,
+    parsed.data.error.status,
+  ].filter((value): value is string | number => value !== undefined)
+    .map(normalizedProviderClassifier);
+  const has = (...values: string[]) => classifiers.some((item) => values.includes(item));
+  let code: Parameters<typeof createModelError>[0] = "MODEL_PROTOCOL_ERROR";
+  let message = "模型返回了未知的错误响应";
+  let recoverable = false;
+
+  if (has("401", "403", "auth", "authentication", "authentication_error", "invalid_api_key", "unauthorized")) {
+    code = "MODEL_AUTH_ERROR";
+    message = "模型服务鉴权失败";
+  } else if (has("402", "payment", "payment_required", "insufficient_quota")) {
+    code = "MODEL_PAYMENT_REQUIRED";
+    message = "模型服务额度或付费状态不可用";
+  } else if (has("400", "404", "409", "422", "invalid_request", "invalid_request_error", "bad_request")) {
+    code = "MODEL_REQUEST_INVALID";
+    message = "模型请求无效";
+  } else if (has("408", "timeout", "request_timeout")) {
+    code = "MODEL_TIMEOUT";
+    message = "模型服务请求超时";
+    recoverable = true;
+  } else if (has("429", "rate_limit", "rate_limited", "rate_limit_exceeded")) {
+    code = "MODEL_RATE_LIMITED";
+    message = "模型服务触发速率限制";
+    recoverable = true;
+  } else if (has(
+    "500", "502", "503", "504", "overloaded", "service_unavailable",
+    "provider_unavailable", "internal_error", "server_error", "upstream_error",
+  )) {
+    code = "MODEL_PROVIDER_UNAVAILABLE";
+    message = "模型服务暂时不可用";
+    recoverable = true;
+  }
+
+  return createModelError(code, message, recoverable, {
+    providerCode: classifiers[0] ?? "unknown",
+  });
 }
 
 function mergeFragment(current: string, fragment: string): string {
@@ -214,6 +283,8 @@ export async function accumulateChatCompletion(
     }
     const parsed = WireChunkSchema.safeParse(raw);
     if (!parsed.success) {
+      const envelopeError = providerEnvelopeError(raw);
+      if (envelopeError !== undefined) throw envelopeError;
       throw createModelError(
         "MODEL_PROTOCOL_ERROR",
         "模型 chunk 结构无效",
@@ -243,6 +314,21 @@ export async function accumulateChatCompletion(
     }
 
     if (chunk.usage) {
+      const topLevelCached = chunk.usage.prompt_cache_hit_tokens;
+      const detailedCached = chunk.usage.prompt_tokens_details?.cached_tokens;
+      if (
+        topLevelCached !== undefined &&
+        detailedCached !== undefined &&
+        topLevelCached !== detailedCached
+      ) {
+        throw createModelError(
+          "MODEL_PROTOCOL_ERROR",
+          "模型返回了互相冲突的缓存 Token 用量",
+          false,
+          { field: "usage.cached_prompt_tokens" },
+        );
+      }
+      const cachedPromptTokens = topLevelCached ?? detailedCached;
       usage = {
         ...(chunk.usage.prompt_tokens === undefined
           ? {}
@@ -259,7 +345,14 @@ export async function accumulateChatCompletion(
               reasoningTokens:
                 chunk.usage.completion_tokens_details.reasoning_tokens,
             }),
+        ...(cachedPromptTokens === undefined
+          ? {}
+          : { cachedPromptTokens }),
+        ...(chunk.usage.prompt_cache_miss_tokens === undefined
+          ? {}
+          : { cacheMissPromptTokens: chunk.usage.prompt_cache_miss_tokens }),
       };
+      options.onSemanticOutput?.();
     }
 
     const choice = chunk.choices[0];
@@ -268,6 +361,7 @@ export async function accumulateChatCompletion(
     }
 
     if (choice.delta.content) {
+      options.onSemanticOutput?.();
       contentBytes += utf8ByteLength(choice.delta.content);
       if (contentBytes > MAX_MODEL_CONTENT_BYTES) {
         throw createModelError(
@@ -281,6 +375,7 @@ export async function accumulateChatCompletion(
       await options.onTextDelta?.(choice.delta.content);
     }
     if (choice.delta.reasoning_content) {
+      options.onSemanticOutput?.();
       reasoningBytes += utf8ByteLength(choice.delta.reasoning_content);
       if (reasoningBytes > MAX_MODEL_REASONING_BYTES) {
         throw createModelError(
@@ -294,6 +389,7 @@ export async function accumulateChatCompletion(
     }
 
     for (const [position, delta] of (choice.delta.tool_calls ?? []).entries()) {
+      options.onSemanticOutput?.();
       const index = delta.index ?? position;
       const pending = pendingCalls.get(index) ?? {
         index,
@@ -344,6 +440,7 @@ export async function accumulateChatCompletion(
     }
 
     if (choice.finish_reason !== null) {
+      options.onSemanticOutput?.();
       if (finishReason && finishReason !== choice.finish_reason) {
         throw createModelError(
           "MODEL_PROTOCOL_ERROR",
@@ -392,13 +489,6 @@ export async function accumulateChatCompletion(
       typeof wireArguments === "string"
         ? wireArguments
         : JSON.stringify(wireArguments);
-    providerCalls.push({
-      internalId,
-      providerId,
-      name: pending.name,
-      wireArguments,
-    });
-
     if (!ToolNameSchema.safeParse(pending.name).success) {
       normalizedCalls.push(
         invalidToolCall(
@@ -439,6 +529,12 @@ export async function accumulateChatCompletion(
         name: pending.name,
         arguments: argumentsObject,
       }),
+    });
+    providerCalls.push({
+      internalId,
+      providerId,
+      name: pending.name,
+      wireArguments,
     });
   }
 

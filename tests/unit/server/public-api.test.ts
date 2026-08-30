@@ -6,13 +6,18 @@ describe("server public barrel", () => {
   it("exports only route-facing runtime helpers", () => {
     expect(Object.keys(server).sort()).toEqual([
       "ApprovalRequestSchema",
+      "BrowseWorkspaceRequestSchema",
       "CancelRequestSchema",
       "CreateSessionRequestSchema",
       "EventPageSearchSchema",
       "NDJSON_RESPONSE_HEADERS",
+      "PlanApprovalRequestSchema",
       "RecentWorkspaceSearchSchema",
       "RouteUuidSchema",
       "RunRequestBodySchema",
+      "WORKSPACE_PERMISSION_MODES",
+      "WorkspacePermissionQuerySchema",
+      "WorkspacePermissionRequestSchema",
       "WorkspaceValidateRequestSchema",
       "apiErrorInfoResponse",
       "apiErrorResponse",

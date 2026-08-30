@@ -80,4 +80,22 @@ describe("local tool risk assessment", () => {
     );
     expect(Object.isFrozen(assessment)).toBe(true);
   });
+
+  it("does not lower process risk merely because readiness is requested", () => {
+    const withoutReadiness = assessLocalToolRisk(
+      prepared("run_process", { program: "pnpm", args: ["dev"] }),
+    );
+    const withReadiness = assessLocalToolRisk(
+      prepared("run_process", {
+        program: "pnpm",
+        args: ["dev"],
+        readiness: { url: "http://127.0.0.1:43123/" },
+      }),
+    );
+    expect(withReadiness).toMatchObject({
+      decision: withoutReadiness.decision,
+      level: withoutReadiness.level,
+      reasonCode: withoutReadiness.reasonCode,
+    });
+  });
 });

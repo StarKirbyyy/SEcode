@@ -6,6 +6,7 @@ import {
   type ErrorInfo,
   type JsonObject,
   type JsonValue,
+  type PlanId,
   type RunId,
   type RunStatus,
   type SessionId,
@@ -15,6 +16,8 @@ import {
 
 import { createAgentError } from "./errors";
 import type {
+  AgentRunPhase,
+  PendingPlanApprovalView,
   RunSnapshot,
   SessionAgentSnapshot,
 } from "./types";
@@ -35,11 +38,23 @@ interface ProjectedTool {
   approval?: ProjectedApproval;
   started: boolean;
   result?: ToolResult;
+  requestedPhase: AgentRunPhase;
+}
+
+interface ProjectedPlan {
+  planId: PlanId;
+  approvalId: ApprovalId;
+  content: string;
+  approved?: boolean;
+  reason?: string;
 }
 
 interface ProjectedModelRound {
   iteration: number;
   finishReason: string;
+  outputRejected?: "retry" | "content_suppressed";
+  completionEvidenceRejected?: number;
+  writeDependencyRejected?: number;
   intermediateSeen: boolean;
   toolCollectionLocked: boolean;
   tools: ProjectedTool[];
@@ -49,15 +64,22 @@ export interface ProjectedRunState {
   runId: RunId;
   promptPreview: string;
   limits: {
-    maxIterations: number;
+    maxIterations?: number;
+    maxToolCalls: number;
     maxDurationMs: number;
   };
+  planningEnabled: boolean;
+  phase: AgentRunPhase;
   userMessageSeen: boolean;
   iterations: number;
+  toolCalls: number;
   pendingModelIteration?: number;
   currentRound?: ProjectedModelRound;
   toolCallIds: Set<ToolCallId>;
   approvalIds: Set<ApprovalId>;
+  planIds: Set<PlanId>;
+  planApprovalIds: Set<ApprovalId>;
+  plan?: ProjectedPlan;
   finalSeen: boolean;
   lastToolErrorSignature?: string;
   consecutiveToolErrors: number;
@@ -67,6 +89,15 @@ export interface ProjectedRunState {
   >;
   terminalError?: ErrorInfo;
   cancellationReason?: string;
+  contextCompaction?: {
+    throughSeq: number;
+    strategy: "model" | "deterministic_fallback";
+    fallbackReason?:
+      | "model_timeout"
+      | "model_failed"
+      | "model_output_invalid"
+      | "summary_input_over_budget";
+  };
 }
 
 export interface AgentProjectionState {
@@ -105,6 +136,37 @@ export function createToolErrorSignature(
   return `${toolName}\n${result.error?.code ?? "UNKNOWN"}\n${digest}`;
 }
 
+function stableToolMetadata(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(stableToolMetadata);
+  if (value === null || typeof value !== "object") return value;
+  const stable: JsonObject = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "durationMs" || key === "elapsedMs") continue;
+    stable[key] = stableToolMetadata(item);
+  }
+  return stable;
+}
+
+export function createToolSuccessSignature(
+  toolName: string,
+  publicArguments: JsonObject,
+  result: ToolResult,
+): string | undefined {
+  if (!result.ok) return undefined;
+  const facts: JsonObject = {
+    arguments: publicArguments,
+    summary: result.summary,
+    ...(result.output === undefined ? {} : { output: result.output }),
+    ...(result.metadata === undefined
+      ? {}
+      : { metadata: stableToolMetadata(result.metadata) }),
+  };
+  const digest = createHash("sha256")
+    .update(canonicalJsonValue(facts))
+    .digest("hex");
+  return `${toolName}\n${digest}`;
+}
+
 function historyError(event: DurableAgentEvent, reason: string): never {
   throw createAgentError("AGENT_HISTORY_INVALID", "Agent 事件历史无效", {
     eventType: event.type,
@@ -134,6 +196,12 @@ function firstUnresolvedTool(
   return round.tools.find((tool) => tool.result === undefined);
 }
 
+function isPlanningTool(toolName: string): boolean {
+  return toolName === "list_directory" ||
+    toolName === "read_file" ||
+    toolName === "search_text";
+}
+
 function requireToolRound(
   run: ProjectedRunState,
   event: DurableAgentEvent,
@@ -159,6 +227,7 @@ function assertCurrentTool(
 
 function deriveRunStatus(run: ProjectedRunState): RunStatus {
   if (run.terminalStatus !== undefined) return run.terminalStatus;
+  if (run.phase === "awaiting_plan_approval") return "awaiting_plan_approval";
   if (run.pendingModelIteration !== undefined) return "requesting_model";
   const round = run.currentRound;
   if (round !== undefined) {
@@ -187,21 +256,47 @@ function snapshotRun(run: ProjectedRunState): RunSnapshot {
           toolSummary: pendingApproval.toolSummary,
         })
       : undefined;
+  const plan = run.plan;
+  const pendingPlanApproval: PendingPlanApprovalView | undefined =
+    run.phase === "awaiting_plan_approval" &&
+    plan !== undefined &&
+    plan.approved === undefined
+      ? Object.freeze({
+          planId: plan.planId,
+          approvalId: plan.approvalId,
+          content: plan.content,
+        })
+      : undefined;
   return Object.freeze({
     runId: run.runId,
     status: deriveRunStatus(run),
     iterations: run.iterations,
+    modelRequests: run.iterations,
+    toolCalls: run.toolCalls,
+    phase: run.phase,
+    planningEnabled: run.planningEnabled,
     promptPreview: run.promptPreview,
-    limits: Object.freeze({ ...run.limits }),
+    limits: Object.freeze({
+      ...run.limits,
+      ...(run.limits.maxIterations === undefined
+        ? {}
+        : { maxModelRequests: run.limits.maxIterations }),
+    }),
     ...(pendingApprovalView === undefined
       ? {}
       : { pendingApproval: pendingApprovalView }),
+    ...(pendingPlanApproval === undefined
+      ? {}
+      : { pendingPlanApproval }),
     ...(run.terminalError === undefined
       ? {}
       : { terminalError: Object.freeze({ ...run.terminalError }) }),
     ...(run.cancellationReason === undefined
       ? {}
       : { cancellationReason: run.cancellationReason }),
+    ...(run.contextCompaction === undefined
+      ? {}
+      : { contextCompaction: Object.freeze({ ...run.contextCompaction }) }),
   });
 }
 
@@ -266,7 +361,12 @@ function startModelRound(
     historyError(event, "model_request_not_at_stable_boundary");
   }
   const previous = run.currentRound;
-  if (previous?.finishReason === "stop") {
+  if (
+    previous?.finishReason === "stop" &&
+    previous.outputRejected !== "retry" &&
+    previous.completionEvidenceRejected === undefined &&
+    previous.writeDependencyRejected === undefined
+  ) {
     historyError(event, "model_request_after_stop");
   }
   if (
@@ -325,11 +425,22 @@ export function projectAgentEvent(
     state.currentRun = {
       runId: event.runId,
       promptPreview: event.data.promptPreview,
-      limits: { ...event.data.limits },
+      limits: {
+        ...(event.data.limits.maxIterations === undefined
+          ? {}
+          : { maxIterations: event.data.limits.maxIterations }),
+        maxToolCalls: event.data.limits.maxToolCalls ?? 120,
+        maxDurationMs: event.data.limits.maxDurationMs,
+      },
+      planningEnabled: event.data.planningEnabled ?? false,
+      phase: event.data.planningEnabled === true ? "planning" : "normal",
       userMessageSeen: false,
       iterations: 0,
+      toolCalls: 0,
       toolCallIds: new Set(),
       approvalIds: new Set(),
+      planIds: new Set(),
+      planApprovalIds: new Set(),
       finalSeen: false,
       consecutiveToolErrors: 0,
     };
@@ -354,6 +465,13 @@ export function projectAgentEvent(
 
     case "context.compacted":
       assertStableForCompaction(run, event);
+      run.contextCompaction = {
+        throughSeq: event.data.throughSeq,
+        strategy: event.data.strategy ?? "model",
+        ...(event.data.fallbackReason === undefined
+          ? {}
+          : { fallbackReason: event.data.fallbackReason }),
+      };
       break;
 
     case "model.requested":
@@ -383,19 +501,85 @@ export function projectAgentEvent(
       };
       break;
 
+    case "model.output.rejected": {
+      const round = run.currentRound;
+      if (
+        run.pendingModelIteration !== undefined ||
+        round === undefined ||
+        round.iteration !== event.data.iteration ||
+        round.outputRejected !== undefined ||
+        (event.data.action === "retry" && round.finishReason !== "stop") ||
+        (event.data.action === "content_suppressed" &&
+          round.finishReason !== "tool_calls")
+      ) {
+        historyError(event, "model_output_rejection_position_invalid");
+      }
+      round.outputRejected = event.data.action;
+      break;
+    }
+
+    case "completion.evidence.rejected": {
+      const round = run.currentRound;
+      if (
+        run.pendingModelIteration !== undefined ||
+        round === undefined ||
+        round.finishReason !== "stop" ||
+        round.iteration !== event.data.iteration ||
+        round.outputRejected !== undefined ||
+        round.completionEvidenceRejected !== undefined ||
+        run.finalSeen ||
+        event.data.correctionAttempt > 2
+      ) {
+        historyError(event, "completion_evidence_rejection_position_invalid");
+      }
+      round.completionEvidenceRejected = event.data.correctionAttempt;
+      break;
+    }
+
+    case "validation.repair.warning":
+      if (run.pendingModelIteration !== undefined || run.currentRound === undefined || run.finalSeen) {
+        historyError(event, "validation_repair_warning_position_invalid");
+      }
+      break;
+
+    case "write.dependency.rejected": {
+      const round = run.currentRound;
+      if (
+        run.pendingModelIteration !== undefined ||
+        round === undefined ||
+        round.finishReason !== "stop" ||
+        round.iteration !== event.data.iteration ||
+        round.outputRejected !== undefined ||
+        round.completionEvidenceRejected !== undefined ||
+        round.writeDependencyRejected !== undefined ||
+        run.finalSeen
+      ) {
+        historyError(event, "write_dependency_rejection_position_invalid");
+      }
+      round.writeDependencyRejected = event.data.correctionAttempt;
+      break;
+    }
+
     case "assistant.message": {
       if (run.pendingModelIteration !== undefined || run.currentRound === undefined) {
         historyError(event, "assistant_message_without_completion");
       }
       const round = run.currentRound;
       if (event.data.kind === "final") {
-        if (round.finishReason !== "stop" || run.finalSeen) {
+        if (
+          round.finishReason !== "stop" ||
+          round.outputRejected !== undefined ||
+          run.finalSeen ||
+          run.phase === "planning" ||
+          run.phase === "awaiting_plan_approval"
+        ) {
           historyError(event, "final_message_position_invalid");
         }
         run.finalSeen = true;
       } else {
         if (
           round.finishReason !== "tool_calls" ||
+          round.outputRejected === "retry" ||
           round.intermediateSeen ||
           round.tools.length > 0 ||
           round.toolCollectionLocked
@@ -413,12 +597,14 @@ export function projectAgentEvent(
         historyError(event, "tool_request_duplicate_or_late");
       }
       run.toolCallIds.add(event.data.toolCallId);
+      run.toolCalls += 1;
       round.tools.push({
         toolCallId: event.data.toolCallId,
         toolName: event.data.toolName,
         publicArguments: event.data.publicArguments,
         requestedSeq: event.seq,
         started: false,
+        requestedPhase: run.phase,
       });
       break;
     }
@@ -428,9 +614,11 @@ export function projectAgentEvent(
       round.toolCollectionLocked = true;
       const tool = assertCurrentTool(round, event, event.data.toolCallId);
       if (
+        run.phase === "planning" ||
         tool.approval !== undefined ||
         tool.started ||
-        run.approvalIds.has(event.data.approvalId)
+        run.approvalIds.has(event.data.approvalId) ||
+        run.planApprovalIds.has(event.data.approvalId)
       ) {
         historyError(event, "approval_required_duplicate_or_late");
       }
@@ -464,7 +652,11 @@ export function projectAgentEvent(
       const round = requireToolRound(run, event);
       round.toolCollectionLocked = true;
       const tool = assertCurrentTool(round, event, event.data.toolCallId);
-      if (tool.toolName !== event.data.toolName || tool.started) {
+      if (
+        tool.toolName !== event.data.toolName ||
+        tool.started ||
+        (tool.requestedPhase === "planning" && !isPlanningTool(tool.toolName))
+      ) {
         historyError(event, "tool_started_duplicate_or_name_mismatch");
       }
       if (
@@ -498,6 +690,13 @@ export function projectAgentEvent(
           historyError(event, "rejected_tool_result_invalid");
         }
       }
+      if (
+        tool.requestedPhase === "planning" &&
+        !isPlanningTool(tool.toolName) &&
+        (tool.started || event.data.result.error?.code !== "TOOL_PHASE_DENIED")
+      ) {
+        historyError(event, "planning_tool_result_invalid");
+      }
       tool.result = event.data.result;
       {
         const signature = createToolErrorSignature(
@@ -518,11 +717,62 @@ export function projectAgentEvent(
       break;
     }
 
+    case "plan.proposed": {
+      const round = run.currentRound;
+      if (
+        !run.planningEnabled ||
+        run.phase !== "planning" ||
+        run.plan !== undefined ||
+        run.pendingModelIteration !== undefined ||
+        round?.finishReason !== "stop" ||
+        round.outputRejected !== undefined ||
+        run.finalSeen ||
+        run.planIds.has(event.data.planId) ||
+        run.planApprovalIds.has(event.data.approvalId) ||
+        run.approvalIds.has(event.data.approvalId)
+      ) {
+        historyError(event, "plan_proposal_position_invalid");
+      }
+      run.planIds.add(event.data.planId);
+      run.planApprovalIds.add(event.data.approvalId);
+      run.plan = {
+        planId: event.data.planId,
+        approvalId: event.data.approvalId,
+        content: event.data.content,
+      };
+      run.phase = "awaiting_plan_approval";
+      break;
+    }
+
+    case "plan.approval.resolved": {
+      const plan = run.plan;
+      if (
+        run.phase !== "awaiting_plan_approval" ||
+        plan === undefined ||
+        plan.approved !== undefined ||
+        plan.planId !== event.data.planId ||
+        plan.approvalId !== event.data.approvalId ||
+        run.approvalIds.has(event.data.approvalId)
+      ) {
+        historyError(event, "plan_approval_resolution_invalid");
+      }
+      plan.approved = event.data.approved;
+      if (event.data.reason !== undefined) plan.reason = event.data.reason;
+      if (event.data.approved) {
+        run.phase = "executing";
+        run.currentRound = undefined;
+      }
+      break;
+    }
+
     case "run.completed":
       if (
+        run.phase === "planning" ||
+        run.phase === "awaiting_plan_approval" ||
         !run.finalSeen ||
         run.pendingModelIteration !== undefined ||
         run.currentRound?.finishReason !== "stop" ||
+        run.currentRound.outputRejected !== undefined ||
         event.data.iterations !== run.iterations
       ) {
         historyError(event, "run_completed_without_final_stable_state");

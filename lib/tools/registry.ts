@@ -57,6 +57,16 @@ function deepFreezeInvocation(
     ...(Array.isArray(arguments_.args)
       ? { args: Object.freeze([...arguments_.args]) }
       : {}),
+    ...(Array.isArray(arguments_.replacements)
+      ? { replacements: Object.freeze(arguments_.replacements.map((item) =>
+          Object.freeze({ ...(item as Record<string, unknown>) })
+        )) }
+      : {}),
+    ...(arguments_.readiness !== undefined &&
+      arguments_.readiness !== null &&
+      typeof arguments_.readiness === "object"
+      ? { readiness: Object.freeze({ ...arguments_.readiness }) }
+      : {}),
   });
   const invocation = Object.freeze({
     name,
@@ -86,23 +96,21 @@ function projectArguments(
     });
   }
   if (name === "replace_in_file") {
-    const oldText = arguments_.oldText as string;
-    const newText = arguments_.newText as string;
+    const replacements = Array.isArray(arguments_.replacements)
+      ? arguments_.replacements as Array<{ oldText: string; newText: string }>
+      : [{ oldText: arguments_.oldText as string, newText: arguments_.newText as string }];
     return createPublicToolArguments({
       path: arguments_.path,
       expectedSha256: arguments_.expectedSha256,
-      oldTextBytes: utf8ByteLength(oldText),
-      oldTextSha256: sha256Bytes(Buffer.from(oldText, "utf8")),
-      oldTextPreview: truncateUtf8(
-        redactSecrets(oldText),
-        MAX_PUBLIC_PREVIEW_BYTES,
-      ).value,
-      newTextBytes: utf8ByteLength(newText),
-      newTextSha256: sha256Bytes(Buffer.from(newText, "utf8")),
-      newTextPreview: truncateUtf8(
-        redactSecrets(newText),
-        MAX_PUBLIC_PREVIEW_BYTES,
-      ).value,
+      replacementCount: replacements.length,
+      replacements: replacements.map(({ oldText, newText }) => ({
+        oldTextBytes: utf8ByteLength(oldText),
+        oldTextSha256: sha256Bytes(Buffer.from(oldText, "utf8")),
+        oldTextPreview: truncateUtf8(redactSecrets(oldText), MAX_PUBLIC_PREVIEW_BYTES).value,
+        newTextBytes: utf8ByteLength(newText),
+        newTextSha256: sha256Bytes(Buffer.from(newText, "utf8")),
+        newTextPreview: truncateUtf8(redactSecrets(newText), MAX_PUBLIC_PREVIEW_BYTES).value,
+      })),
     });
   }
   return createPublicToolArguments(arguments_);

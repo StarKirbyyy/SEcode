@@ -18,8 +18,14 @@ describe("server error mapping", () => {
     ["API_REQUEST_TOO_LARGE", 413],
     ["API_CONTENT_TYPE_UNSUPPORTED", 415],
     ["API_MODEL_PROFILE_UNAVAILABLE", 422],
+    ["API_SESSION_BUSY", 409],
     ["API_STREAM_FAILED", 500],
     ["API_INTERNAL_ERROR", 500],
+    ["API_WORKSPACE_PICKER_UNAVAILABLE", 503],
+    ["API_WORKSPACE_PICKER_CONFIG_INVALID", 503],
+    ["API_WORKSPACE_PICKER_PATH_INVALID", 400],
+    ["API_WORKSPACE_PICKER_PATH_FORBIDDEN", 403],
+    ["API_WORKSPACE_PICKER_IO_ERROR", 500],
   ] as const)("maps %s", async (code, expected) => {
     expect((await status(createServerError(code, "safe", true))).status).toBe(expected);
   });
@@ -28,6 +34,8 @@ describe("server error mapping", () => {
     expect((await status(new EventStoreError({ code: "SESSION_NOT_FOUND", message: "missing", recoverable: true }))).status).toBe(404);
     expect((await status(new AgentLayerError({ code: "AGENT_SESSION_BUSY", message: "busy", recoverable: true }))).status).toBe(409);
     expect((await status(new AgentLayerError({ code: "AGENT_APPROVAL_INVALID", message: "approval", recoverable: true }))).status).toBe(409);
+    expect((await status(new AgentLayerError({ code: "AGENT_PLAN_NOT_PENDING", message: "plan", recoverable: true }))).status).toBe(409);
+    expect((await status(new AgentLayerError({ code: "AGENT_PLAN_APPROVAL_INVALID", message: "plan", recoverable: true }))).status).toBe(409);
     expect((await status(new EventStoreError({ code: "EVENT_LOG_CORRUPT", message: "corrupt", recoverable: false }))).status).toBe(500);
     expect((await status(new EventStoreError({ code: "EVENT_STORE_IO_ERROR", message: "io", recoverable: true }))).status).toBe(503);
   });

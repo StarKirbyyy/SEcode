@@ -36,6 +36,8 @@ export const MAX_PROCESS_ARGUMENTS = 128;
 export const MAX_PROCESS_ARGUMENT_BYTES = 32 * 1024;
 export const MAX_PUBLIC_PREVIEW_BYTES = 256;
 export const PROCESS_KILL_GRACE_MS = 2_000;
+export const PROCESS_LIFECYCLES = ["oneshot", "service"] as const;
+export type ProcessLifecycle = (typeof PROCESS_LIFECYCLES)[number];
 
 export const LOCAL_TOOL_ERROR_CODES = [
   "TOOL_UNKNOWN",
@@ -79,17 +81,28 @@ export interface WriteFileArguments {
   content: string;
   expectedSha256?: string;
 }
-export interface ReplaceInFileArguments {
-  path: string;
+export interface TextReplacement {
   oldText: string;
   newText: string;
-  expectedSha256: string;
 }
+export type ReplaceInFileArguments = {
+  path: string;
+  expectedSha256: string;
+} & (
+  | TextReplacement
+  | { replacements: TextReplacement[] }
+);
 export interface RunProcessArguments {
   program: string;
   args: string[];
   cwd: string;
   timeoutMs: number;
+  lifecycle?: ProcessLifecycle;
+  readiness?: Readonly<{
+    url: string;
+    expectedStatus: number;
+    timeoutMs?: number;
+  }>;
 }
 
 declare const preparedInvocationBrand: unique symbol;

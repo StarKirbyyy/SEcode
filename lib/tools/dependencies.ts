@@ -22,6 +22,8 @@ export interface ToolDependencies {
   ): ChildProcess;
   randomUUID(): string;
   now(): number;
+  probeHttp(url: string, signal: AbortSignal): Promise<number>;
+  signalProcess(pid: number, signal: NodeJS.Signals): void;
 }
 
 export const nativeToolDependencies: ToolDependencies = {
@@ -36,4 +38,15 @@ export const nativeToolDependencies: ToolDependencies = {
   spawnProcess: (program, args, options) => spawn(program, args, options),
   randomUUID,
   now: Date.now,
+  probeHttp: async (url, signal) => {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "manual",
+      credentials: "omit",
+      signal,
+    });
+    await response.body?.cancel().catch(() => undefined);
+    return response.status;
+  },
+  signalProcess: (pid, signal) => process.kill(pid, signal),
 };

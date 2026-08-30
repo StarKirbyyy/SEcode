@@ -73,8 +73,15 @@ export async function executeReplaceInFile(
       },
     );
   }
-  const match = findUniqueMatch(content.text, arguments_.oldText);
-  if (match === "none") {
+  const replacements = "replacements" in arguments_
+    ? arguments_.replacements
+    : [{ oldText: arguments_.oldText, newText: arguments_.newText }];
+  const matches = replacements.map((replacement) => ({
+    ...replacement,
+    match: findUniqueMatch(content.text, replacement.oldText),
+  }));
+  const missing = matches.find((item) => item.match === "none");
+  if (missing !== undefined) {
     return createToolFailure(
       "FILE_MATCH_NOT_FOUND",
       "目标文本未找到",
@@ -87,7 +94,8 @@ export async function executeReplaceInFile(
       },
     );
   }
-  if (match === "many") {
+  const nonUnique = matches.find((item) => item.match === "many");
+  if (nonUnique !== undefined) {
     return createToolFailure(
       "FILE_MATCH_NOT_UNIQUE",
       "目标文本不是唯一匹配",
@@ -100,10 +108,34 @@ export async function executeReplaceInFile(
       },
     );
   }
-  const nextText =
-    content.text.slice(0, match) +
-    arguments_.newText +
-    content.text.slice(match + arguments_.oldText.length);
+  const positioned = matches
+    .map((item) => ({ ...item, match: item.match as number }))
+    .sort((left, right) => left.match - right.match);
+  for (let index = 1; index < positioned.length; index += 1) {
+    const previous = positioned[index - 1];
+    const current = positioned[index];
+    if (previous === undefined || current === undefined) continue;
+    if (current.match < previous.match + previous.oldText.length) {
+      return createToolFailure(
+        "FILE_MATCH_NOT_UNIQUE",
+        "批量替换目标相互重叠",
+        true,
+        {
+          toolName: "replace_in_file",
+          relativePath: arguments_.path,
+          reason: "replacement_overlap",
+          matches: 2,
+        },
+      );
+    }
+  }
+  let cursor = 0;
+  let nextText = "";
+  for (const item of positioned) {
+    nextText += content.text.slice(cursor, item.match) + item.newText;
+    cursor = item.match + item.oldText.length;
+  }
+  nextText += content.text.slice(cursor);
   if (utf8ByteLength(nextText) > MAX_REPLACEMENT_TEXT_BYTES) {
     return createToolFailure(
       "FILE_TOO_LARGE",
@@ -132,7 +164,8 @@ export async function executeReplaceInFile(
       beforeSha256: content.sha256,
       afterSha256: result.afterSha256,
       changed: result.changed,
-      replacedOccurrences: 1,
+      replacementCount: replacements.length,
+      replacedOccurrences: replacements.length,
       bytes: result.bytes,
     });
   } catch (cause) {

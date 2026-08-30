@@ -25,7 +25,7 @@ describe("context security boundaries", () => {
     expect(source).not.toMatch(/from ["'](?:next|react|react-dom|ai|langchain|@ai-sdk|openai)/);
     expect(source).not.toMatch(/node:(?:fs|child_process)|process\.env|\bfetch\s*\(/);
     expect(source).not.toMatch(/\.appendEvent\s*\(|prepareLocalToolCall|requestLocalToolAuthorization/);
-    expect(source).not.toMatch(/reasoningContent|reasoningTokens|\.continuation\b/);
+    expect(source).not.toMatch(/reasoningContent|reasoning_content|\.continuation\b/);
   });
 
   it("contains no credential-shaped production fixture", async () => {

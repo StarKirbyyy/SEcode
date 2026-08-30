@@ -15,6 +15,7 @@ import type {
 import { createJsonlEventStore, type JsonlEventStore } from "@/lib/storage";
 import { createWorkspaceHandle } from "@/lib/workspace";
 import { createServerApplication } from "@/lib/server/application";
+import { createWorkspacePickerService } from "@/lib/server/workspace-picker";
 import type { ServerApplication } from "@/lib/server";
 
 const APPLICATION_KEY = Symbol.for("secode.server.application.v1");
@@ -119,6 +120,9 @@ export async function createServerFixture(
     modelClient: model,
     runtime,
     createWorkspace: createWorkspaceHandle,
+    workspacePicker: createWorkspacePickerService({
+      env: { SECODE_WORKSPACE_PICKER_ROOT: workspace },
+    }),
   });
   (globalThis as Record<symbol, unknown>)[APPLICATION_KEY] = Promise.resolve(application);
   return { root, dataDir, workspace, store, model, application };

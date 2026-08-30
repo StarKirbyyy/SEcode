@@ -15,6 +15,9 @@ export const TERMINAL_HELP_TEXT = `SEcode 本地编程智能体
 命令：
   /help                 显示帮助
   /status               显示当前运行状态
+  /plan on|off          设置下一任务是否先规划后执行
+  /approve-plan [原因]  同意当前计划并在同一运行中执行
+  /reject-plan [原因]   拒绝当前计划并取消运行
   /approve [原因]       批准待审批操作
   /reject [原因]        拒绝待审批操作
   /cancel [原因]        取消当前运行
@@ -28,7 +31,7 @@ export const TERMINAL_HELP_TEXT = `SEcode 本地编程智能体
 
 安全边界：仅面向可信本地单用户；文件操作受工作区边界限制，危险操作需要审批。不会自动读取 .env 文件。`;
 
-export const TERMINAL_COMMAND_HELP_TEXT = `可用命令：/help /status /approve [原因] /reject [原因] /cancel [原因] /exit`;
+export const TERMINAL_COMMAND_HELP_TEXT = `可用命令：/help /status /plan on|off /approve-plan [原因] /reject-plan [原因] /approve [原因] /reject [原因] /cancel [原因] /exit`;
 
 function invalid(field: string, reason: string): never {
   throw createTerminalError("TERMINAL_ARGUMENT_INVALID", "命令行参数无效", { field, reason });
@@ -102,7 +105,16 @@ export function parseTerminalCommand(line: string): TerminalCommand {
     return { kind: simpleKind };
   }
   const reasoned = new Map([["/approve", "approve"], ["/reject", "reject"], ["/cancel", "cancel"]] as const);
-  const kind = reasoned.get(token as "/approve" | "/reject" | "/cancel");
+  if (token === "/plan") {
+    if (reason !== "on" && reason !== "off") commandInvalid(token, "expected_on_or_off");
+    return { kind: "plan", enabled: reason === "on" };
+  }
+  const planReasoned = new Map([
+    ["/approve-plan", "approve-plan"],
+    ["/reject-plan", "reject-plan"],
+  ] as const);
+  const kind = reasoned.get(token as "/approve" | "/reject" | "/cancel")
+    ?? planReasoned.get(token as "/approve-plan" | "/reject-plan");
   if (kind === undefined) commandInvalid(token, "unknown_command");
   if (reason !== undefined && reason.length > MAX_APPROVAL_REASON_CHARACTERS) commandInvalid(token, "reason_too_long");
   return { kind, ...(reason === undefined ? {} : { reason }) };

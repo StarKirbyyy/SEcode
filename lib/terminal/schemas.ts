@@ -44,6 +44,15 @@ export const TerminalCommandSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("empty") }),
   z.strictObject({ kind: z.literal("help") }),
   z.strictObject({ kind: z.literal("status") }),
+  z.strictObject({ kind: z.literal("plan"), enabled: z.boolean() }),
+  z.strictObject({
+    kind: z.literal("approve-plan"),
+    reason: z.string().max(MAX_APPROVAL_REASON_CHARACTERS).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("reject-plan"),
+    reason: z.string().max(MAX_APPROVAL_REASON_CHARACTERS).optional(),
+  }),
   z.strictObject({
     kind: z.literal("approve"),
     reason: z.string().max(MAX_APPROVAL_REASON_CHARACTERS).optional(),

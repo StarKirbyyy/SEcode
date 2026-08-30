@@ -89,11 +89,17 @@ export interface CreatedStoredSession {
   readonly event: Extract<DurableAgentEvent, { type: "session.created" }>;
 }
 
+export interface DeletedStoredSession {
+  readonly sessionId: SessionId;
+  readonly status: "deleted";
+}
+
 export interface JsonlEventStore {
   initialize(): Promise<void>;
   createSession(
     input: CreateStoredSessionInput,
   ): Promise<CreatedStoredSession>;
+  deleteSession(sessionId: SessionId): Promise<DeletedStoredSession>;
   getSessionMetadata(sessionId: SessionId): Promise<StoredSessionMetadata>;
   listSessions(): Promise<readonly StoredSessionMetadata[]>;
   listRecentWorkspaces(

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { nativeAgentRuntimeDependencies } from "@/lib/agent/dependencies";
 import { AgentLayerError } from "@/lib/agent/errors";
@@ -10,6 +10,7 @@ import {
   createAgentFixture,
   createStaticContextProvider,
   createTextCompletion,
+  createToolCompletion,
   removeAgentTemporaryDirectories,
 } from "./helpers";
 
@@ -36,7 +37,7 @@ describe("Agent session recovery", () => {
     expect(first).toMatchObject({ status: "idle", lastSeq: 1 });
   });
 
-  it("interrupts one open run exactly once", async () => {
+  it("interrupts one open run without a model request limit exactly once", async () => {
     const fixture = await createAgentFixture();
     const sessionId = (await fixture.store.listSessions())[0].id;
     await fixture.store.appendEvent(sessionId, {
@@ -44,7 +45,7 @@ describe("Agent session recovery", () => {
       runId: RUN_ID,
       data: {
         promptPreview: "task",
-        limits: { maxIterations: 30, maxDurationMs: 600_000 },
+        limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
       },
     });
     const runtime = createAgentRuntimeWithDependencies(
@@ -61,6 +62,10 @@ describe("Agent session recovery", () => {
     const events = (await fixture.store.readEvents(sessionId)).events;
 
     expect(recovered.status).toBe("interrupted");
+    expect(recovered.lastRun?.limits).toEqual({
+      maxToolCalls: 300,
+      maxDurationMs: 600_000,
+    });
     expect(again.lastSeq).toBe(3);
     expect(events.filter((event) => event.type === "run.interrupted")).toHaveLength(1);
     expect(events[2]).toMatchObject({
@@ -100,6 +105,69 @@ describe("Agent session recovery", () => {
     await expect(runtime.recoverSession(sessionId)).rejects.toMatchObject({
       error: { code: "AGENT_HISTORY_INVALID" },
     });
+  });
+
+  it("does not restore the in-memory workspace observation ledger into a later run", async () => {
+    const fixture = await createAgentFixture();
+    const sessionId = (await fixture.store.listSessions())[0].id;
+    let nextId = 810;
+    const randomUUID = () =>
+      `00000000-0000-4000-8000-${String(nextId++).padStart(12, "0")}`;
+    const firstRuntime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: new QueueModelClient([
+          createToolCompletion([{
+            ok: true,
+            call: {
+              id: randomUUID(),
+              name: "list_directory",
+              arguments: { path: ".", depth: 1 },
+            },
+          }]),
+          createTextCompletion("空目录观察完成。"),
+        ]),
+        contextProvider: createStaticContextProvider(),
+      },
+      { ...nativeAgentRuntimeDependencies, randomUUID },
+    );
+    const first = await firstRuntime.startRun({ sessionId, prompt: "观察空目录" });
+    await expect(first.completion).resolves.toMatchObject({ status: "completed" });
+
+    const execute = vi.fn(nativeAgentRuntimeDependencies.executeAuthorizedLocalTool);
+    const secondRuntime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: new QueueModelClient([
+          createToolCompletion([{
+            ok: true,
+            call: {
+              id: randomUUID(),
+              name: "write_file",
+              arguments: { path: "server/index.ts", content: "export {};\n" },
+            },
+          }]),
+          createTextCompletion("后续 run 已收到真实工作区错误。"),
+        ]),
+        contextProvider: createStaticContextProvider(),
+      },
+      {
+        ...nativeAgentRuntimeDependencies,
+        randomUUID,
+        executeAuthorizedLocalTool: execute,
+      },
+    );
+    await secondRuntime.recoverSession(sessionId);
+    const second = await secondRuntime.startRun({ sessionId, prompt: "新的 run 尝试写入" });
+    await expect(second.completion).resolves.toMatchObject({ status: "completed" });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const events = (await fixture.store.readEvents(sessionId)).events;
+    expect(events.some(
+      (event) => event.runId === second.runId &&
+        event.type === "tool.started" &&
+        event.data.toolName === "write_file",
+    )).toBe(true);
   });
 });
 

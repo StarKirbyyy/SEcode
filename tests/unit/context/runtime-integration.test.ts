@@ -96,8 +96,90 @@ describe("context provider and AgentRuntime integration", () => {
         "run.completed",
       ]);
       expect(complete).toHaveBeenCalledTimes(1);
-      expect(complete.mock.calls[0][0].messages.map((message) => message.role))
-        .toEqual(["system", "system", "user"]);
+      const request = complete.mock.calls[0][0];
+      expect(request.messages.map((message) => message.role))
+        .toEqual(["system", "system", "user", "system", "system"]);
+      expect(request.messages[0]!.content).toContain("当前阶段：正常执行");
+      expect(request.messages[2]).toMatchObject({
+        role: "user",
+        content: "检查项目",
+      });
+      expect(request.tools).toHaveLength(6);
+      expect(request.tools.every((tool) => /[\u3400-\u9fff]/u.test(
+        tool.function.description,
+      ))).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("captures Chinese planning and approved-execution requests in one run", async () => {
+    const fixture = await createTempContextStore();
+    try {
+      const created = await fixture.store.createSession({
+        title: "中文请求捕获",
+        workspacePath: fixture.workspacePath,
+        modelProfileId: "deepseek",
+      });
+      let requestCount = 0;
+      const complete = vi.fn<ModelClient["complete"]>(async () => {
+        requestCount += 1;
+        return requestCount === 1
+          ? modelCompletion("目标：Keep APIName\n事实：无需修改\n任务：核对\n验证：检查结果\n风险：无\n不执行：写入")
+          : modelCompletion("已完成核对");
+      });
+      const model = createFakeModelClient(1_000_000, complete);
+      const runtime = createAgentRuntime({
+        eventStore: fixture.store,
+        modelClient: model,
+        contextProvider: createAgentContextProvider({
+          eventSource: fixture.store,
+          modelClient: model,
+        }),
+      });
+      const handle = await runtime.startRun({
+        sessionId: created.metadata.id,
+        prompt: "保留 APIName 和 src/English.ts",
+        planningEnabled: true,
+      });
+      await vi.waitFor(() => {
+        expect(runtime.getActiveRun(handle.runId)?.pendingPlanApproval)
+          .toBeDefined();
+      });
+      const pending = runtime.getActiveRun(handle.runId)!.pendingPlanApproval!;
+      await expect(runtime.resolvePlanApproval(
+        handle.runId,
+        pending.approvalId,
+        { planId: pending.planId, approved: true },
+      )).resolves.toMatchObject({ status: "resolved", approved: true });
+      await expect(handle.completion).resolves.toMatchObject({
+        status: "completed",
+        modelRequests: 2,
+      });
+
+      expect(complete).toHaveBeenCalledTimes(2);
+      const planning = complete.mock.calls[0][0];
+      const executing = complete.mock.calls[1][0];
+      expect(planning.messages[0]!.content).toContain("当前阶段：规划");
+      expect(planning.messages.some((message) =>
+        message.role === "user" &&
+        message.content === "保留 APIName 和 src/English.ts"
+      )).toBe(true);
+      expect(planning.tools.map((tool) => tool.function.name)).toEqual([
+        "list_directory",
+        "read_file",
+        "search_text",
+      ]);
+      expect(executing.messages[0]!.content).toContain("当前阶段：已批准执行");
+      expect(executing.messages.some((message) =>
+        message.role === "assistant" &&
+        message.content?.includes("Keep APIName")
+      )).toBe(true);
+      expect(executing.messages.some((message) =>
+        message.role === "user" &&
+        message.content.includes("我批准上述持久化计划提案")
+      )).toBe(true);
+      expect(executing.tools).toHaveLength(6);
     } finally {
       await fixture.cleanup();
     }
@@ -169,6 +251,139 @@ describe("context provider and AgentRuntime integration", () => {
     }
   });
 
+  it("continues the same Session after legacy large outputs without repeating old tools", async () => {
+    const fixture = await createTempContextStore();
+    try {
+      await writeFile(`${fixture.workspacePath}/next.txt`, "继续\n", "utf8");
+      const created = await fixture.store.createSession({
+        title: "旧大输出恢复",
+        workspacePath: fixture.workspacePath,
+        modelProfileId: "deepseek",
+      });
+      const oldToolCallIds: string[] = [];
+      for (let index = 1; index <= 9; index += 1) {
+        const runId = numberedRunId(index);
+        const toolCallId = `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+        oldToolCallIds.push(toolCallId);
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "run.started",
+          runId,
+          data: {
+            promptPreview: `脱敏历史 ${index}`,
+            limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
+          },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "user.message",
+          runId,
+          data: { content: `脱敏历史 ${index}` },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "model.requested",
+          runId,
+          data: { iteration: 1, modelProfileId: "deepseek" },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "model.completed",
+          runId,
+          data: { iteration: 1, finishReason: "tool_calls" },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "tool.requested",
+          runId,
+          data: {
+            toolCallId,
+            toolName: "read_file",
+            publicArguments: { path: `legacy-${index}.txt` },
+            argumentsTruncated: false,
+          },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "tool.started",
+          runId,
+          data: { toolCallId, toolName: "read_file" },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "tool.result",
+          runId,
+          data: {
+            toolCallId,
+            toolName: "read_file",
+            result: {
+              ok: true,
+              summary: "旧读取完成",
+              output: `legacy-${index}:`.padEnd(55_785, "x"),
+            },
+          },
+        });
+        await fixture.store.appendEvent(created.metadata.id, {
+          type: "run.failed",
+          runId,
+          data: {
+            iterations: 1,
+            error: {
+              code: "AGENT_CONTEXT_FAILED",
+              message: "模型上下文构建失败",
+              recoverable: true,
+            },
+          },
+        });
+      }
+
+      const newToolCallId = "30000000-0000-4000-8000-000000000999";
+      const complete = vi.fn<ModelClient["complete"]>(async () => {
+        if (complete.mock.calls.length === 1) {
+          return {
+            ...modelCompletion("继续读取新文件"),
+            finishReason: "tool_calls",
+            toolCalls: [{
+              ok: true,
+              call: {
+                id: newToolCallId,
+                name: "read_file",
+                arguments: { path: "next.txt", startLine: 1 },
+              },
+            }],
+          };
+        }
+        return modelCompletion("恢复任务已完成");
+      });
+      const model = createFakeModelClient(64_000, complete);
+      const runtime = createAgentRuntime({
+        eventStore: fixture.store,
+        modelClient: model,
+        contextProvider: createAgentContextProvider({
+          eventSource: fixture.store,
+          modelClient: model,
+        }),
+      });
+      const handle = await runtime.startRun({
+        sessionId: created.metadata.id,
+        prompt: "继续",
+      });
+      await expect(handle.completion).resolves.toMatchObject({
+        status: "completed",
+        modelRequests: 2,
+      });
+
+      const events = (await fixture.store.readEvents(created.metadata.id, {
+        limit: 1_000,
+      })).events;
+      const requestedIds = events
+        .filter((event) => event.type === "tool.requested")
+        .map((event) => event.data.toolCallId);
+      for (const oldId of oldToolCallIds) {
+        expect(requestedIds.filter((id) => id === oldId)).toHaveLength(1);
+      }
+      expect(requestedIds.filter((id) => id === newToolCallId)).toHaveLength(1);
+      expect(events.filter((event) => event.type === "model.requested")).toHaveLength(11);
+      expect(JSON.stringify(complete.mock.calls[0][0].messages))
+        .not.toContain("x".repeat(20_000));
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("persists compaction before the next agent model request", async () => {
     const fixture = await createTempContextStore();
     try {
@@ -185,7 +400,8 @@ describe("context provider and AgentRuntime integration", () => {
           ? modelCompletion("早期任务已完成并验证")
           : modelCompletion("当前任务完成"),
       );
-      const model = createFakeModelClient(22_000, complete);
+      // readiness 扩展增加了工具定义 Token；保留“需要压缩且最近 8 回合可保留”的夹具语义。
+      const model = createFakeModelClient(25_000, complete);
       const runtime = createAgentRuntime({
         eventStore: fixture.store,
         modelClient: model,

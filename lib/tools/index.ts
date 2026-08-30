@@ -1,6 +1,8 @@
 export {
+  DEPENDENCY_RECOVERY_TOOL_DEFINITIONS,
   ListDirectoryArgumentsSchema,
   LOCAL_TOOL_DEFINITIONS,
+  PLANNING_TOOL_DEFINITIONS,
   ReadFileArgumentsSchema,
   ReplaceInFileArgumentsSchema,
   RunProcessArgumentsSchema,

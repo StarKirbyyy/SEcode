@@ -49,6 +49,7 @@ import {
   SESSION_METADATA_FILE_NAME,
   STORAGE_VERSION,
   type CreatedStoredSession,
+  type DeletedStoredSession,
   type EventPage,
   type JsonlEventStore,
   type JsonlEventStoreOptions,
@@ -58,6 +59,17 @@ import {
 
 const ROOT_LOCK_KEY = "root";
 const SESSION_TEMP_PREFIX = ".creating-";
+const SESSION_DELETE_PREFIX = ".deleting-";
+
+function parseDeletionTombstoneName(name: string): boolean {
+  if (!name.startsWith(SESSION_DELETE_PREFIX)) return false;
+  const suffix = name.slice(SESSION_DELETE_PREFIX.length);
+  if (suffix.length !== 73 || suffix[36] !== "-") return false;
+  return (
+    UuidSchema.safeParse(suffix.slice(0, 36)).success &&
+    UuidSchema.safeParse(suffix.slice(37)).success
+  );
+}
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
@@ -277,6 +289,51 @@ async function syncDirectory(
   }
 }
 
+async function cleanupDeletionTombstones(
+  sessionsRoot: string,
+  dependencies: EventStoreDependencies,
+): Promise<void> {
+  let entries;
+  try {
+    entries = await dependencies.fs.readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    throw mapStorageIoError(error, "Deletion tombstones could not be listed.");
+  }
+  let removed = false;
+  for (const entry of entries) {
+    if (!parseDeletionTombstoneName(entry.name)) continue;
+    const tombstonePath = path.join(sessionsRoot, entry.name);
+    try {
+      const before = await dependencies.fs.lstat(tombstonePath);
+      if (before.isSymbolicLink()) {
+        throw createEventStoreError(
+          "EVENT_STORE_SYMLINK_DENIED",
+          "A deletion tombstone cannot be a symbolic link.",
+        );
+      }
+      if (!before.isDirectory()) {
+        throw createEventStoreError(
+          "EVENT_STORE_PATH_CONFLICT",
+          "A deletion tombstone is not a directory.",
+          { expectedKind: "directory", actualKind: "other" },
+        );
+      }
+      const realPath = await dependencies.fs.realpath(tombstonePath);
+      if (realPath !== tombstonePath || path.dirname(realPath) !== sessionsRoot) {
+        throw createEventStoreError(
+          "EVENT_STORE_SYMLINK_DENIED",
+          "A deletion tombstone escaped the event store.",
+        );
+      }
+      await dependencies.fs.rm(tombstonePath, { recursive: true, force: false });
+      removed = true;
+    } catch (error) {
+      throw mapStorageIoError(error, "A deletion tombstone could not be removed.");
+    }
+  }
+  if (removed) await syncDirectory(sessionsRoot, dependencies);
+}
+
 interface LoadedSession {
   readonly metadata: StoredSessionMetadata;
   readonly scan: EventLogScanResult;
@@ -312,10 +369,15 @@ class JsonlEventStoreImplementation implements JsonlEventStore {
       if (this.initializedConfig !== undefined) {
         return;
       }
-      this.initializedConfig = await initializeEventStoreConfig(
+      const initializedConfig = await initializeEventStoreConfig(
         this.pendingConfig,
         this.dependencies,
       );
+      await cleanupDeletionTombstones(
+        initializedConfig.sessionsRoot,
+        this.dependencies,
+      );
+      this.initializedConfig = initializedConfig;
     });
   }
 
@@ -486,6 +548,53 @@ class JsonlEventStoreImplementation implements JsonlEventStore {
     return this.executor.run(`session:${sessionId}`, async () =>
       deepFreeze(await this.loadMetadataUnlocked(sessionId)),
     );
+  }
+
+  async deleteSession(sessionIdInput: unknown): Promise<DeletedStoredSession> {
+    this.requireInitialized();
+    const sessionId = parseSessionId(sessionIdInput);
+    return this.executor.run(`session:${sessionId}`, async () => {
+      const config = this.requireInitialized();
+      const sessionPath = await validateSessionDirectory(
+        config.sessionsRoot,
+        sessionId,
+        this.dependencies,
+      );
+      const nonce = parseGeneratedUuid(
+        this.dependencies.randomUUID(),
+        "deletionTombstoneNonce",
+      );
+      const tombstonePath = path.join(
+        config.sessionsRoot,
+        `${SESSION_DELETE_PREFIX}${sessionId}-${nonce}`,
+      );
+      let renamed = false;
+      try {
+        await this.dependencies.fs.rename(sessionPath, tombstonePath);
+        renamed = true;
+        await syncDirectory(config.sessionsRoot, this.dependencies);
+        await this.dependencies.fs.rm(tombstonePath, {
+          recursive: true,
+          force: false,
+        });
+        await syncDirectory(config.sessionsRoot, this.dependencies);
+      } catch (error) {
+        if (renamed) {
+          throw createEventStoreError(
+            "EVENT_COMMIT_UNCERTAIN",
+            "The session became unavailable but deletion cleanup is uncertain.",
+            { sessionId },
+            error,
+          );
+        }
+        throw mapStorageIoError(
+          error,
+          "The session could not be deleted.",
+          { sessionId },
+        );
+      }
+      return deepFreeze({ sessionId, status: "deleted" as const });
+    });
   }
 
   async listSessions(): Promise<readonly StoredSessionMetadata[]> {

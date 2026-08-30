@@ -26,6 +26,7 @@ export {
   SESSION_METADATA_FILE_NAME,
   STORAGE_VERSION,
   type CreatedStoredSession,
+  type DeletedStoredSession,
   type DurableEventDraft,
   type EventPage,
   type EventStoreErrorCode,

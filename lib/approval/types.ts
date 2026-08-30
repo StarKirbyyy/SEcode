@@ -52,6 +52,8 @@ export const MAX_TOOL_SUMMARY_CHARACTERS = 1_024;
 export type RiskDecision = (typeof RISK_DECISIONS)[number];
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 export type RiskReasonCode = (typeof RISK_REASON_CODES)[number];
+export const WORKSPACE_PERMISSION_MODES = ["ask", "full"] as const;
+export type WorkspacePermissionMode = (typeof WORKSPACE_PERMISSION_MODES)[number];
 export type ApprovalToolErrorCode =
   (typeof APPROVAL_TOOL_ERROR_CODES)[number];
 export type ApprovalLifecycleErrorCode =

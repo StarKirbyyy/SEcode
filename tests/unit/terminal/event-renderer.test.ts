@@ -51,8 +51,51 @@ describe("agent event renderer", () => {
     expect(compacted.frames[0]?.text).not.toContain("绝不能显示");
     expect(compacted.frames[0]?.text).toContain("21–30");
 
+    const fallback = renderAgentEvent(agentEvent("context.compacted", {
+      throughSeq: 30,
+      summary: "绝不能显示的降级摘要正文",
+      retainedRange: { fromSeq: 31, toSeq: 40 },
+      strategy: "deterministic_fallback",
+      fallbackReason: "model_timeout",
+    }));
+    expect(fallback.frames[0]).toMatchObject({ channel: "stderr" });
+    expect(fallback.frames[0]?.text).toContain("本地降级");
+    expect(fallback.frames[0]?.text).not.toContain("model_timeout");
+    expect(fallback.frames[0]?.text).not.toContain("绝不能显示");
+
     const failed = renderAgentEvent(agentEvent("run.failed", { iterations: 2, error: { code: "AGENT_INTERNAL_ERROR", message: "失败", recoverable: false } }));
     expect(failed.frames[0]).toMatchObject({ channel: "stderr" });
+
+    const contextFailed = renderAgentEvent(agentEvent("run.failed", {
+      iterations: 2,
+      error: {
+        code: "AGENT_CONTEXT_FAILED",
+        message: "模型上下文构建失败",
+        recoverable: true,
+        details: {
+          contextCode: "CONTEXT_BUDGET_EXCEEDED",
+          reason: "fallback_over_budget",
+          private: "/Users/private/project",
+        },
+      },
+    }));
+    expect(contextFailed.frames[0]?.text).toContain("新建 Session 或缩小任务");
+    expect(contextFailed.frames[0]?.text).not.toContain("/Users/private");
+
+    const projectedRecentFailure = renderAgentEvent(agentEvent("run.failed", {
+      iterations: 0,
+      error: {
+        code: "AGENT_CONTEXT_FAILED",
+        message: "模型上下文构建失败",
+        recoverable: true,
+        details: {
+          contextCode: "CONTEXT_BUDGET_EXCEEDED",
+          reason: "projected_recent_rounds_over_budget",
+        },
+      },
+    }));
+    expect(projectedRecentFailure.frames[0]?.text).toContain("重复“继续”预计无效");
+    expect(projectedRecentFailure.frames[0]?.text).toContain("新建 Session 或缩小任务");
   });
 
   it("renders creation and model usage without private usage fields", () => {
@@ -61,10 +104,67 @@ describe("agent event renderer", () => {
     }));
     expect(created.frames[0]?.text).toContain("测试");
     const completed = renderAgentEvent(agentEvent("model.completed", {
-      iteration: 1, finishReason: "stop", usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+      iteration: 1,
+      finishReason: "stop",
+      usage: { promptTokens: 10, completionTokens: 3, totalTokens: 13, reasoningTokens: 2, cachedPromptTokens: 8, cacheMissPromptTokens: 2 },
+      contextCache: { status: "warm", reusedEvents: 4, tailEvents: 1, avoidedBytes: 512, buildMilliseconds: 2 },
     }));
-    expect(completed.frames[0]?.text).toContain("总计 5");
-    expect(completed.frames[0]?.text).not.toContain("reasoning");
+    expect(completed.frames[0]?.text).toContain("总计 13");
+    expect(completed.frames[0]?.text).toContain("推理 2");
+    expect(completed.frames[0]?.text).toContain("命中率 80.0%");
+    expect(completed.frames[0]?.text).toContain("本地 Context cache warm");
     expect(RUN_ID).toBeTruthy();
+  });
+
+  it("renders an unset model request limit explicitly", () => {
+    const started = renderAgentEvent(agentEvent("run.started", {
+      promptPreview: "任务",
+      limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
+    }));
+    expect(started.frames[0]?.text).toContain("模型请求上限 未设置");
+    expect(started.frames[0]?.text).toContain("工具调用上限 300");
+    expect(started.frames[0]?.text).not.toContain("undefined");
+  });
+
+  it("renders rejected output as Chinese status without exposing content", () => {
+    const retry = renderAgentEvent(agentEvent("model.output.rejected", {
+      iteration: 1,
+      reason: "language_mismatch",
+      action: "retry",
+      retryAttempt: 1,
+      contentCharacters: 48,
+      contentSha256: "d".repeat(64),
+    }));
+    expect(retry.frames[0]).toMatchObject({ channel: "stderr" });
+    expect(retry.frames[0]?.text).toContain("正在请求中文重述（1/2）");
+    expect(retry.frames[0]?.text).not.toContain("d".repeat(64));
+
+    const suppressed = renderAgentEvent(agentEvent("model.output.rejected", {
+      iteration: 2,
+      reason: "language_mismatch",
+      action: "content_suppressed",
+      retryAttempt: 0,
+      contentCharacters: 32,
+      contentSha256: "e".repeat(64),
+    }));
+    expect(suppressed.frames[0]?.text).toContain("工具将按原请求执行一次");
+  });
+
+  it("renders plan proposal and resolution as a separate approval flow", () => {
+    const planId = "00000000-0000-4000-8000-000000000020";
+    const approvalId = "00000000-0000-4000-8000-000000000021";
+    const proposed = renderAgentEvent(agentEvent("plan.proposed", {
+      planId,
+      approvalId,
+      content: "1. 检查\n2. 修改\n3. 测试",
+    }));
+    expect(proposed.frames[0]?.text).toContain("/approve-plan");
+    expect(proposed.frames[0]?.text).toContain("1. 检查");
+    const resolved = renderAgentEvent(agentEvent("plan.approval.resolved", {
+      planId,
+      approvalId,
+      approved: true,
+    }));
+    expect(resolved.frames[0]?.text).toContain("继续同一运行");
   });
 });

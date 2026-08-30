@@ -33,6 +33,9 @@ function processSummary(
 ): string {
   const program = JSON.stringify(safeValue(invocation.arguments.program));
   const cwd = JSON.stringify(safeValue(invocation.arguments.cwd));
+  const readiness = invocation.arguments.readiness === undefined
+    ? ""
+    : ` readiness=${JSON.stringify(invocation.arguments.readiness.url)} expectedStatus=${invocation.arguments.readiness.expectedStatus}`;
   let redactNext = false;
   const args = invocation.arguments.args.map((argument) => {
     if (redactNext) {
@@ -51,7 +54,7 @@ function processSummary(
     return JSON.stringify(safeValue(argument));
   });
   return bounded(
-    `执行程序 program=${program} cwd=${cwd} argv=[${args.join(", ")}]`,
+    `执行程序 program=${program} cwd=${cwd}${readiness} argv=[${args.join(", ")}]`,
     MAX_TOOL_SUMMARY_CHARACTERS,
   );
 }
@@ -82,7 +85,7 @@ export function createToolSummary(
       );
     case "replace_in_file":
       return bounded(
-        `替换文件内容 path=${JSON.stringify(safeValue(invocation.arguments.path))}`,
+        `替换文件内容 path=${JSON.stringify(safeValue(invocation.arguments.path))} count=${"replacements" in invocation.arguments ? invocation.arguments.replacements.length : 1}`,
         MAX_TOOL_SUMMARY_CHARACTERS,
       );
     case "run_process":

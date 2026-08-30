@@ -59,10 +59,14 @@ export function createSessionCreatedEvent(seq = 1): DurableAgentEvent {
   });
 }
 
-export function createRunStartedEvent(seq = 2): DurableAgentEvent {
+export function createRunStartedEvent(
+  seq = 2,
+  planningEnabled?: boolean,
+): DurableAgentEvent {
   return createDurableEvent(seq, "run.started", {
     promptPreview: "修复测试",
     limits: { maxIterations: 30, maxDurationMs: 600_000 },
+    ...(planningEnabled === undefined ? {} : { planningEnabled }),
   });
 }
 

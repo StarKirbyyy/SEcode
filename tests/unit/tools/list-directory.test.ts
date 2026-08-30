@@ -26,7 +26,7 @@ describe("list_directory", () => {
       { path: ".", depth: 2, limit: 100 },
     );
     expect(result.ok).toBe(true);
-    expect(result.output).toContain("directory src");
+    expect(result.output).toMatch(/^目录\s+src$/m);
     expect(result.output).toContain("src/a.ts");
     expect(result.output?.indexOf("src/a.ts")).toBeLessThan(
       result.output?.indexOf("src/z.ts") ?? 0,
@@ -46,7 +46,7 @@ describe("list_directory", () => {
       { workspace: fixture.workspace, signal: new AbortController().signal },
       { path: ".", depth: 1, limit: 100 },
     );
-    expect(result.output).toContain("blocked   outside-link");
+    expect(result.output).toMatch(/^已阻止\s+outside-link$/m);
     expect(JSON.stringify(result)).not.toContain(fixture.outside);
   });
 

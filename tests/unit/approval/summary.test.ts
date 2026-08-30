@@ -63,6 +63,20 @@ describe("approval tool summaries", () => {
     expect(replace).not.toContain(secret);
   });
 
+  it("summarizes an atomic replacement batch without exposing its text", () => {
+    const secret = "batch-secret-that-must-not-appear";
+    const summary = createToolSummary(prepared("replace_in_file", {
+      path: "README.md",
+      expectedSha256: "b".repeat(64),
+      replacements: [
+        { oldText: secret, newText: "first" },
+        { oldText: "second", newText: `${secret}-new` },
+      ],
+    }));
+    expect(summary).toContain("count=2");
+    expect(summary).not.toContain(secret);
+  });
+
   it("redacts argv secrets, escapes tokens and truncates large summaries", () => {
     const metacharacter = '"; $(touch nope) | > file';
     const invocation = prepared("run_process", {
@@ -94,5 +108,18 @@ describe("approval tool summaries", () => {
     );
     expect(summary).toContain(REDACTED_VALUE);
     expect(summary).not.toContain("plain-visible-value");
+  });
+
+  it("shows only the validated readiness target and status", () => {
+    const summary = createToolSummary(prepared("run_process", {
+      program: "pnpm",
+      args: ["dev"],
+      readiness: {
+        url: "http://127.0.0.1:43123/health",
+        expectedStatus: 204,
+      },
+    }));
+    expect(summary).toContain("readiness=\"http://127.0.0.1:43123/health\"");
+    expect(summary).toContain("expectedStatus=204");
   });
 });

@@ -42,16 +42,20 @@ describe("terminal argument parser", () => {
 });
 
 describe("terminal command parser", () => {
-  it("parses tasks, empty and six commands", () => {
+  it("parses tasks, empty, Plan Mode and approval commands", () => {
     expect(parseTerminalCommand("  修复错误  ")).toEqual({ kind: "task", content: "修复错误" });
     expect(parseTerminalCommand("  ")).toEqual({ kind: "empty" });
     for (const kind of ["help", "status", "exit"] as const) expect(parseTerminalCommand(`/${kind}`)).toEqual({ kind });
     expect(parseTerminalCommand("/approve 因为安全")).toEqual({ kind: "approve", reason: "因为安全" });
     expect(parseTerminalCommand("/reject   ")).toEqual({ kind: "reject" });
     expect(parseTerminalCommand("/cancel 用户请求")).toEqual({ kind: "cancel", reason: "用户请求" });
+    expect(parseTerminalCommand("/plan on")).toEqual({ kind: "plan", enabled: true });
+    expect(parseTerminalCommand("/plan off")).toEqual({ kind: "plan", enabled: false });
+    expect(parseTerminalCommand("/approve-plan 同意")).toEqual({ kind: "approve-plan", reason: "同意" });
+    expect(parseTerminalCommand("/reject-plan")).toEqual({ kind: "reject-plan" });
   });
 
-  it.each(["/HELP", "/unknown", "/help extra", "/status extra", "/exit extra"])("rejects invalid command %s", (line) => {
+  it.each(["/HELP", "/unknown", "/help extra", "/status extra", "/exit extra", "/plan", "/plan yes", "/plan on extra"])("rejects invalid command %s", (line) => {
     expect(codeOf(() => parseTerminalCommand(line))).toBe("TERMINAL_COMMAND_INVALID");
   });
 

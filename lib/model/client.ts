@@ -12,7 +12,7 @@ import {
   readModelApiKey,
   resolveServerModelProfile,
 } from "./config";
-import { parseSseStream, type SseStreamEvent } from "./sse";
+import { parseSseStream } from "./sse";
 import {
   DEFAULT_MAX_MODEL_ATTEMPTS,
   DEFAULT_MODEL_TIMEOUT_MS,
@@ -283,14 +283,26 @@ function partialError(error: ModelLayerError): ModelLayerError {
   );
 }
 
-async function* trackPayload(
-  events: AsyncIterable<SseStreamEvent>,
-  onPayload: () => void,
-): AsyncGenerator<SseStreamEvent> {
-  for await (const event of events) {
-    if (event.type === "data") onPayload();
-    yield event;
-  }
+function isRetryableStreamError(error: ModelLayerError): boolean {
+  return error.error.code === "MODEL_RATE_LIMITED" ||
+    error.error.code === "MODEL_PROVIDER_UNAVAILABLE" ||
+    error.error.code === "MODEL_TIMEOUT";
+}
+
+function annotateStreamError(
+  error: ModelLayerError,
+  attempt: number,
+  profileId: string,
+  provider: string,
+): ModelLayerError {
+  if (typeof error.error.details?.providerCode !== "string") return error;
+  return createModelError(
+    error.error.code as ModelErrorCode,
+    error.error.message,
+    error.error.recoverable,
+    { ...error.error.details, attempt, profileId, provider },
+    error,
+  );
 }
 
 function validateDependencies(dependencies: ModelClientDependencies): void {
@@ -352,7 +364,7 @@ export function createModelClient(options: ModelClientOptions): ModelClient {
           request.signal,
           dependencies.timeoutMs,
         );
-        let payloadStarted = false;
+        let semanticAccepted = false;
         let retryAfterMs: number | undefined;
         let retryable = false;
         let response: Response | undefined;
@@ -393,16 +405,20 @@ export function createModelClient(options: ModelClientOptions): ModelClient {
             const parsed = parseSseStream(response.body, {
               signal: attemptContext.controller.signal,
             });
-            return await accumulateChatCompletion(
-              trackPayload(parsed, () => {
-                payloadStarted = true;
-              }),
+            const completion = await accumulateChatCompletion(
+              parsed,
               {
                 definition,
                 continuationState: plan.continuationState,
                 onTextDelta: request.onTextDelta,
+                onSemanticOutput: () => {
+                  semanticAccepted = true;
+                },
               },
             );
+            return attempt === 1
+              ? completion
+              : { ...completion, usageComplete: false };
           }
         } catch (cause) {
           if (request.signal.aborted) callerAbort(request.signal);
@@ -420,10 +436,15 @@ export function createModelClient(options: ModelClientOptions): ModelClient {
               },
               cause,
             );
-            retryable = !payloadStarted;
+            retryable = !semanticAccepted;
           } else if (cause instanceof ModelLayerError) {
-            error = cause;
-            retryable = false;
+            error = annotateStreamError(
+              cause,
+              attempt,
+              definition.profile.id,
+              definition.adapter,
+            );
+            retryable = !semanticAccepted && isRetryableStreamError(cause);
           } else if (cause instanceof ModelAbortError) {
             error = networkError(
               attempt,
@@ -431,7 +452,7 @@ export function createModelClient(options: ModelClientOptions): ModelClient {
               definition.adapter,
               cause,
             );
-            retryable = !payloadStarted;
+            retryable = !semanticAccepted;
           } else {
             error = networkError(
               attempt,
@@ -439,11 +460,11 @@ export function createModelClient(options: ModelClientOptions): ModelClient {
               definition.adapter,
               cause,
             );
-            retryable = !payloadStarted;
+            retryable = !semanticAccepted;
           }
-          lastError = payloadStarted ? partialError(error) : error;
-          if (payloadStarted && response?.body) {
-            await response.body.cancel("partial model stream failed").catch(() => undefined);
+          lastError = semanticAccepted ? partialError(error) : error;
+          if (response?.body) {
+            await response.body.cancel("model stream failed").catch(() => undefined);
           }
         } finally {
           attemptContext.dispose();

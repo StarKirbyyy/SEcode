@@ -25,6 +25,7 @@ export function POST(
       {
         sessionId,
         prompt: body.prompt,
+        planningEnabled: body.planningEnabled,
         limits: body.limits,
         ...(body.thinking === undefined ? {} : { thinking: body.thinking }),
       },

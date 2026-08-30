@@ -54,12 +54,12 @@ function successfulRead(index: number) {
 }
 
 describe("Agent iteration limits", () => {
-  it("allows exactly the configured final iteration", async () => {
+  it("allows progress beyond the legacy default when no limit is configured", async () => {
     const fixture = await createAgentFixture();
     await writeFile(`${fixture.workspace}/one.txt`, "one\n", "utf8");
     const sessionId = (await fixture.store.listSessions())[0].id;
     const completions = [
-      ...Array.from({ length: 29 }, (_, index) => successfulRead(index)),
+      ...Array.from({ length: 61 }, (_, index) => unknownFailure(index, { index })),
       createTextCompletion(),
     ];
     const model = new QueueModelClient(completions);
@@ -75,10 +75,21 @@ describe("Agent iteration limits", () => {
     const handle = await runtime.startRun({ sessionId, prompt: "task" });
     await expect(handle.completion).resolves.toMatchObject({
       status: "completed",
-      iterations: 30,
+      iterations: 62,
+      modelRequests: 62,
+      toolCalls: 61,
     });
-    expect(model.requests).toHaveLength(30);
-  });
+    expect(model.requests).toHaveLength(62);
+    const events = (await fixture.store.readEvents(sessionId)).events;
+    const started = events.find((event) => event.type === "run.started");
+    expect(started).toMatchObject({
+      type: "run.started",
+      data: { limits: { maxToolCalls: 300, maxDurationMs: 1_800_000 } },
+    });
+    if (started?.type === "run.started") {
+      expect(started.data.limits.maxIterations).toBeUndefined();
+    }
+  }, 10_000);
 
   it("does not issue a request beyond a lowered limit", async () => {
     const fixture = await createAgentFixture();
@@ -104,6 +115,11 @@ describe("Agent iteration limits", () => {
       error: { code: "AGENT_ITERATION_LIMIT" },
     });
     expect(model.requests).toHaveLength(1);
+    const events = (await fixture.store.readEvents(sessionId)).events;
+    expect(events.find((event) => event.type === "run.started")).toMatchObject({
+      type: "run.started",
+      data: { limits: { maxIterations: 1, maxToolCalls: 300 } },
+    });
   });
 });
 
@@ -171,5 +187,64 @@ describe("Agent repeated tool error limit", () => {
       .toBe(createToolErrorSignature("unknown_tool", { b: 2, a: 1 }, result));
     expect(createToolErrorSignature("unknown_tool", { list: [1, 2] }, result))
       .not.toBe(createToolErrorSignature("unknown_tool", { list: [2, 1] }, result));
+  });
+});
+
+describe("Agent tool and no-progress limits", () => {
+  it("rejects an over-limit batch atomically", async () => {
+    const fixture = await createAgentFixture();
+    const sessionId = (await fixture.store.listSessions())[0].id;
+    const model = new QueueModelClient([
+      createToolCompletion([
+        successfulRead(1).toolCalls[0]!,
+        successfulRead(2).toolCalls[0]!,
+      ]),
+    ]);
+    const runtime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: model,
+        contextProvider: createStaticContextProvider(),
+      },
+      { ...nativeAgentRuntimeDependencies, randomUUID: () => RUN_ID },
+    );
+    const handle = await runtime.startRun({
+      sessionId,
+      prompt: "task",
+      limits: { maxToolCalls: 1 },
+    });
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "AGENT_TOOL_CALL_LIMIT" },
+      toolCalls: 0,
+    });
+    const events = (await fixture.store.readEvents(sessionId)).events;
+    expect(events.some((event) => event.type === "tool.requested")).toBe(false);
+  });
+
+  it("stops after the third identical successful read fact", async () => {
+    const fixture = await createAgentFixture();
+    await writeFile(`${fixture.workspace}/one.txt`, "one\n", "utf8");
+    const sessionId = (await fixture.store.listSessions())[0].id;
+    const model = new QueueModelClient([
+      successfulRead(1),
+      successfulRead(2),
+      successfulRead(3),
+    ]);
+    const runtime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: model,
+        contextProvider: createStaticContextProvider(),
+      },
+      { ...nativeAgentRuntimeDependencies, randomUUID: () => RUN_ID },
+    );
+    const handle = await runtime.startRun({ sessionId, prompt: "task" });
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "AGENT_NO_PROGRESS_LIMIT" },
+      modelRequests: 3,
+      toolCalls: 3,
+    });
   });
 });

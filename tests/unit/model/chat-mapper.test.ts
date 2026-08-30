@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { accumulateChatCompletion } from "@/lib/model/chat-accumulator";
-import { buildChatRequest } from "@/lib/model/chat-mapper";
+import {
+  buildChatRequest,
+  suppressContinuationContent,
+} from "@/lib/model/chat-mapper";
 import type { SseStreamEvent } from "@/lib/model/sse";
 import type {
   ModelRequest,
@@ -273,5 +276,58 @@ describe("chat request mapper", () => {
         longcat,
       ),
     ).toThrow(/continuation 不一致/);
+  });
+
+  it("suppresses only provider-visible tool narration in continuation", async () => {
+    const longcat = definition("longcat");
+    const initial = buildChatRequest(request({ profileId: "longcat" }), longcat);
+    const completion = await accumulateChatCompletion(
+      events([{
+        id: "completion-suppressed",
+        choices: [{
+          index: 0,
+          delta: {
+            content: "I will inspect the repository before continuing.",
+            reasoning_content: "PRIVATE_REASONING_KEPT",
+            tool_calls: [{
+              index: 0,
+              id: "provider-call-suppressed",
+              type: "function",
+              function: { name: "read_file", arguments: { path: "source.ts" } },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }]),
+      { definition: longcat, continuationState: initial.continuationState },
+    );
+    const call = completion.toolCalls[0];
+    if (!call?.ok) throw new Error("expected valid tool call");
+
+    const next = buildChatRequest(
+      request({
+        profileId: "longcat",
+        continuation: suppressContinuationContent(completion.continuation),
+        messages: [
+          { role: "user", content: "inspect" },
+          { role: "assistant", content: null, toolCalls: [call.call] },
+          {
+            role: "tool",
+            toolCallId: call.call.id,
+            name: call.call.name,
+            content: "ok",
+          },
+        ],
+      }),
+      longcat,
+    );
+
+    expect(next.body.messages).toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: null,
+      reasoning_content: "PRIVATE_REASONING_KEPT",
+    }));
+    expect(JSON.stringify(next.body.messages)).not.toContain("inspect the repository");
+    expect(JSON.stringify(completion.continuation)).toBe("{}");
   });
 });

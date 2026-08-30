@@ -21,7 +21,7 @@ const profile: ModelProfile = {
   id: "deepseek", label: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek", contextWindow: 64000, supportsThinking: true, configured: true,
 };
 
-function runtimeFixture(options: { immediate?: boolean; pendingApproval?: boolean } = {}) {
+function runtimeFixture(options: { immediate?: boolean; pendingApproval?: boolean; pendingPlan?: boolean } = {}) {
   let counter = 0;
   let current: { handle: AgentRunHandle; completion: ReturnType<typeof deferred<AgentRunOutcome>>; view: ActiveAgentRunView } | undefined;
   const startRun = vi.fn(async (request, controls) => {
@@ -38,26 +38,36 @@ function runtimeFixture(options: { immediate?: boolean; pendingApproval?: boolea
       completion: completion.promise,
       cancel: vi.fn((reason?: string) => {
         if (!current || current.handle.runId !== runId) return false;
-        completion.resolve({ status: "cancelled", runId, iterations: 1, reason: reason ?? "cancel" });
+        completion.resolve({ status: "cancelled", runId, iterations: 1, modelRequests: 1, toolCalls: 0, reason: reason ?? "cancel" });
         current = undefined;
         return true;
       }),
     };
     const view: ActiveAgentRunView = {
-      sessionId: SESSION_ID, runId, status: options.pendingApproval ? "awaiting_approval" : "requesting_model", iterations: 1,
+      sessionId: SESSION_ID,
+      runId,
+      status: options.pendingPlan ? "awaiting_plan_approval" : options.pendingApproval ? "awaiting_approval" : "requesting_model",
+      iterations: 1,
+      modelRequests: 1,
+      toolCalls: 0,
+      phase: options.pendingPlan ? "awaiting_plan_approval" : "normal",
+      planningEnabled: options.pendingPlan ?? false,
+      limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
       ...(options.pendingApproval ? { pendingApproval: { approvalId: "00000000-0000-4000-8000-000000000010", toolCallId: "00000000-0000-4000-8000-000000000011", reason: "确认", toolSummary: "命令" } } : {}),
+      ...(options.pendingPlan ? { pendingPlanApproval: { planId: "00000000-0000-4000-8000-000000000012", approvalId: "00000000-0000-4000-8000-000000000013", content: "完整计划" } } : {}),
     };
     current = { handle, completion, view };
     if (options.immediate) {
-      completion.resolve({ status: "completed", runId, iterations: 1, durationMs: 1 });
+      completion.resolve({ status: "completed", runId, iterations: 1, modelRequests: 1, toolCalls: 0, durationMs: 1 });
       current = undefined;
     }
     return handle;
   });
   const getActiveRun = vi.fn((runId: string) => current?.handle.runId === runId ? current.view : undefined);
   const resolveApproval = vi.fn(async (_runId, _approvalId, decision) => ({ status: "resolved" as const, approved: decision.approved }));
-  const runtime = { startRun, getActiveRun, resolveApproval } as unknown as AgentRuntime;
-  return { runtime, startRun, getActiveRun, resolveApproval, current: () => current };
+  const resolvePlanApproval = vi.fn(async (_runId, _approvalId, decision) => ({ status: "resolved" as const, approved: decision.approved }));
+  const runtime = { startRun, getActiveRun, resolveApproval, resolvePlanApproval } as unknown as AgentRuntime;
+  return { runtime, startRun, getActiveRun, resolveApproval, resolvePlanApproval, current: () => current };
 }
 
 function run(lines: readonly string[], fixture = runtimeFixture()) {
@@ -82,14 +92,31 @@ describe("terminal application", () => {
     expect(output).toContain("空闲");
   });
 
-  it("starts a task with only session, prompt and event sink", async () => {
+  it("starts a task with the current Plan Mode choice and event sink", async () => {
     const fixture = runtimeFixture();
     const item = run(["修复测试", "/exit"], fixture);
     await expect(item.result).resolves.toEqual({ exitCode: 0, reason: "normal" });
     expect(fixture.startRun).toHaveBeenCalledTimes(1);
-    expect(fixture.startRun.mock.calls[0]?.[0]).toEqual({ sessionId: SESSION_ID, prompt: "修复测试" });
+    expect(fixture.startRun.mock.calls[0]?.[0]).toEqual({ sessionId: SESSION_ID, prompt: "修复测试", planningEnabled: false });
     expect(fixture.startRun.mock.calls[0]?.[1]).toEqual({ onEvent: expect.any(Function) });
     expect(item.io.frames.map((frame) => frame.text).join("")).toContain("响应1");
+  });
+
+  it("toggles Plan Mode only while idle and resolves a pending plan independently", async () => {
+    const fixture = runtimeFixture({ pendingPlan: true });
+    const item = run(["/plan on", "执行任务", "/approve-plan 同意计划", "/exit"], fixture);
+    await item.result;
+    expect(fixture.startRun.mock.calls[0]?.[0]).toMatchObject({ planningEnabled: true });
+    expect(fixture.resolvePlanApproval).toHaveBeenCalledWith(
+      RUN_ID,
+      "00000000-0000-4000-8000-000000000013",
+      {
+        planId: "00000000-0000-4000-8000-000000000012",
+        approved: true,
+        reason: "同意计划",
+      },
+    );
+    expect(fixture.resolveApproval).not.toHaveBeenCalled();
   });
 
   it("rejects a second task while active and cancels on exit", async () => {
@@ -98,6 +125,16 @@ describe("terminal application", () => {
     await item.result;
     expect(fixture.startRun).toHaveBeenCalledTimes(1);
     expect(item.io.frames.map((frame) => frame.text).join("\n")).toContain("当前已有运行");
+  });
+
+  it("shows an unset model request limit explicitly", async () => {
+    const fixture = runtimeFixture();
+    const item = run(["任务", "/status", "/exit"], fixture);
+    await item.result;
+    const output = item.io.frames.map((frame) => frame.text).join("\n");
+    expect(output).toContain("模型请求 1/未设置");
+    expect(output).toContain("工具调用 0/300");
+    expect(output).not.toContain("undefined");
   });
 
   it("resolves the current pending approval with the exact id and reason", async () => {

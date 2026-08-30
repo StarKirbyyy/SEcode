@@ -13,7 +13,7 @@ import {
 
 const SummaryDiagnosticSchema = z.strictObject({
   seq: z.int().positive(),
-  kind: z.enum(["tool_error", "run_terminal"]),
+  kind: z.enum(["tool_error", "run_terminal", "completion_evidence", "validation_repair"]),
   code: z.string().trim().min(1).max(128).optional(),
   message: z.string().min(1).max(8_192),
 });

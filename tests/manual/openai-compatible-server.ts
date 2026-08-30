@@ -10,6 +10,7 @@ interface ManualServerHandle {
   readonly baseUrl: string;
   readonly model: string;
   readonly contextWindow: number;
+  readonly requestCount: number;
   close(): Promise<void>;
 }
 
@@ -58,12 +59,77 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
 
 function lastMessageRole(body: Record<string, unknown>): string | undefined {
   if (!Array.isArray(body.messages)) return undefined;
-  const last = body.messages.at(-1);
-  if (last === null || Array.isArray(last) || typeof last !== "object") {
-    return undefined;
+  for (const item of [...body.messages].reverse()) {
+    if (item === null || Array.isArray(item) || typeof item !== "object") continue;
+    const role = (item as Record<string, unknown>).role;
+    if (typeof role === "string" && role !== "system") return role;
   }
-  const role = (last as Record<string, unknown>).role;
-  return typeof role === "string" ? role : undefined;
+  return undefined;
+}
+
+function messages(body: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(body.messages)
+    ? body.messages.filter((item): item is Record<string, unknown> =>
+        item !== null && !Array.isArray(item) && typeof item === "object"
+      )
+    : [];
+}
+
+function hasSystemText(body: Record<string, unknown>, value: string): boolean {
+  return messages(body).some((message) =>
+    message.role === "system" &&
+    typeof message.content === "string" &&
+    message.content.includes(value)
+  );
+}
+
+function hasMessageText(body: Record<string, unknown>, value: string): boolean {
+  return messages(body).some((message) =>
+    typeof message.content === "string" && message.content.includes(value)
+  );
+}
+
+function hasChineseToolDescriptions(body: Record<string, unknown>): boolean {
+  if (!Array.isArray(body.tools) || body.tools.length === 0) return false;
+  return body.tools.every((tool) => {
+    if (tool === null || Array.isArray(tool) || typeof tool !== "object") return false;
+    const fn = (tool as Record<string, unknown>).function;
+    if (fn === null || Array.isArray(fn) || typeof fn !== "object") return false;
+    const definition = fn as Record<string, unknown>;
+    if (
+      typeof definition.description !== "string" ||
+      !/[\u3400-\u9fff]/u.test(definition.description)
+    ) return false;
+    const parameters = definition.parameters;
+    if (parameters === null || Array.isArray(parameters) || typeof parameters !== "object") {
+      return false;
+    }
+    const properties = (parameters as Record<string, unknown>).properties;
+    if (properties === null || Array.isArray(properties) || typeof properties !== "object") {
+      return false;
+    }
+    return Object.values(properties).every((property) =>
+      property !== null &&
+      !Array.isArray(property) &&
+      typeof property === "object" &&
+      typeof (property as Record<string, unknown>).description === "string" &&
+      /[\u3400-\u9fff]/u.test(
+        (property as Record<string, unknown>).description as string,
+      )
+    );
+  });
+}
+
+function hasAssistantTool(body: Record<string, unknown>, name: string): boolean {
+  return messages(body).some((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) return false;
+    return message.tool_calls.some((call) => {
+      if (call === null || Array.isArray(call) || typeof call !== "object") return false;
+      const fn = (call as Record<string, unknown>).function;
+      return fn !== null && !Array.isArray(fn) && typeof fn === "object" &&
+        (fn as Record<string, unknown>).name === name;
+    });
+  });
 }
 
 function event(response: ServerResponse, value: Record<string, unknown>): void {
@@ -127,9 +193,31 @@ function streamToolCall(response: ServerResponse, id: string, callId: string): v
   event(response, chunk(id, {}, "tool_calls"));
 }
 
+function streamNamedToolCall(
+  response: ServerResponse,
+  id: string,
+  callId: string,
+  name: string,
+  argumentsValue: Record<string, unknown>,
+  content?: string,
+): void {
+  event(response, chunk(id, {
+    role: "assistant",
+    ...(content === undefined ? {} : { content }),
+    tool_calls: [{
+      index: 0,
+      id: callId,
+      type: "function",
+      function: { name, arguments: JSON.stringify(argumentsValue) },
+    }],
+  }, null));
+  event(response, chunk(id, {}, "tool_calls"));
+}
+
 export async function startManualOpenAiCompatibleServer(): Promise<ManualServerHandle> {
   let completion = 0;
   let toolCall = 0;
+  let transientEnvelopeServed = false;
   const server = createServer(async (request, response) => {
     try {
       if (request.method === "GET" && request.url === "/health") {
@@ -145,6 +233,14 @@ export async function startManualOpenAiCompatibleServer(): Promise<ManualServerH
       if (!Array.isArray(body.messages)) {
         throw new RequestFailure(400, "messages must be an array");
       }
+      const phaseRequest = [
+        "当前阶段：规划",
+        "当前阶段：已批准执行",
+        "当前阶段：正常执行",
+      ].some((phase) => hasSystemText(body, phase));
+      if (phaseRequest && !hasChineseToolDescriptions(body)) {
+        throw new RequestFailure(400, "phase request tools require Chinese descriptions");
+      }
       response.writeHead(200, {
         "cache-control": "no-cache",
         connection: "keep-alive",
@@ -152,11 +248,70 @@ export async function startManualOpenAiCompatibleServer(): Promise<ManualServerH
       });
 
       const completionId = `completion-${++completion}`;
-      if (
+      if (hasMessageText(body, "SECODE_TRANSIENT_ENVELOPE") && !transientEnvelopeServed) {
+        transientEnvelopeServed = true;
+        event(response, {
+          error: {
+            type: "server_error",
+            code: "service_unavailable",
+            message: "PRIVATE_FIXTURE_PROVIDER_MESSAGE",
+          },
+        });
+      } else if (
         body.tools === undefined ||
         (Array.isArray(body.tools) && body.tools.length === 0)
       ) {
         streamText(response, completionId, "已压缩：保留各轮文件标记与已确认工具事实。");
+      } else if (hasSystemText(body, "当前阶段：规划")) {
+        if (hasMessageText(body, "SECODE_ENGLISH_PLAN")) {
+          streamText(
+            response,
+            completionId,
+            hasSystemText(body, "上一条可见正文不符合输出语言强制策略")
+              ? "计划：先检查项目事实，再完成最小修改，最后运行相关测试。"
+              : "I will inspect the project, make the smallest change, and run the tests.",
+          );
+        } else if (lastMessageRole(body) === "tool") {
+          streamText(response, completionId, "目标理解：在临时项目中创建验收标记并验证现有测试。\n观察事实：已读取 README.md，项目禁止安装依赖和 Git 提交。\n涉及文件：新增 notes/plan-result.txt；不修改其他源码。\n任务顺序：1. 创建标记文件；2. 运行 pnpm test；3. 汇总真实结果。\n逐步验证：写入后由工具结果确认，随后以 pnpm test 退出码确认。\n风险：仅修改临时工作区；测试命令仍受既有进程策略约束。\n明确不执行：不安装依赖、不提交 Git、不删除文件。");
+        } else {
+          streamNamedToolCall(response, completionId, `plan-read-${++toolCall}`, "read_file", { path: "README.md", startLine: 1 });
+        }
+      } else if (hasSystemText(body, "当前阶段：已批准执行")) {
+        if (!hasAssistantTool(body, "write_file")) {
+          streamNamedToolCall(response, completionId, `execute-write-${++toolCall}`, "write_file", { path: "notes/plan-result.txt", content: "stage17 approved execution\n" });
+        } else if (!hasAssistantTool(body, "run_process")) {
+          streamNamedToolCall(response, completionId, `execute-test-${++toolCall}`, "run_process", { program: "pnpm", args: ["test"], cwd: ".", timeoutMs: 120000 });
+        } else {
+          streamText(response, completionId, "已按批准计划创建 notes/plan-result.txt，并运行 pnpm test 完成验证。未安装依赖、未提交 Git。");
+        }
+      } else if (hasSystemText(body, "当前阶段：正常执行")) {
+        if (hasMessageText(body, "SECODE_ALWAYS_ENGLISH")) {
+          streamText(response, completionId, "The response remains entirely in English.");
+        } else if (hasMessageText(body, "SECODE_ENGLISH_FINAL")) {
+          streamText(
+            response,
+            completionId,
+            hasSystemText(body, "上一条可见正文不符合输出语言强制策略")
+              ? "已完成中文重述，未执行任何额外工具。"
+              : "I inspected the repository and completed the requested task.",
+          );
+        } else if (
+          hasMessageText(body, "SECODE_ENGLISH_TOOL_NARRATIVE") &&
+          lastMessageRole(body) !== "tool"
+        ) {
+          streamNamedToolCall(
+            response,
+            completionId,
+            `english-tool-${++toolCall}`,
+            "read_file",
+            { path: "README.md", startLine: 1 },
+            "I will inspect the README before continuing.",
+          );
+        } else if (lastMessageRole(body) === "tool") {
+          streamText(response, completionId, "正常模式已直接读取 README.md 并完成任务；没有生成计划审批事件。");
+        } else {
+          streamNamedToolCall(response, completionId, `normal-read-${++toolCall}`, "read_file", { path: "README.md", startLine: 1 });
+        }
       } else if (lastMessageRole(body) === "tool") {
         streamText(response, completionId, "已读取并确认本轮文件事实。");
       } else {
@@ -193,6 +348,9 @@ export async function startManualOpenAiCompatibleServer(): Promise<ManualServerH
     baseUrl: `http://${HOST}:${address.port}/v1`,
     model: MODEL,
     contextWindow: 14_000,
+    get requestCount() {
+      return completion;
+    },
     async close() {
       if (closed) return;
       closed = true;

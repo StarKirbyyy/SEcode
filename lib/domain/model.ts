@@ -29,6 +29,7 @@ export const ModelProfileSchema = z.strictObject({
 export const RunStatusSchema = z.enum([
   "queued",
   "requesting_model",
+  "awaiting_plan_approval",
   "awaiting_approval",
   "executing_tool",
   "completed",

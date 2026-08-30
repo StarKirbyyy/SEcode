@@ -42,7 +42,7 @@ export function sessionCreated(seq = 1): DurableAgentEvent {
     session: {
       id: SESSION_ID,
       title: "测试 Session",
-      workspacePath: "/tmp/secode-context-workspace",
+      workspacePath: "/sanitized/context-workspace",
       modelProfileId: "deepseek",
       status: "idle",
       createdAt: "2026-08-28T00:00:00.000Z",
@@ -51,10 +51,15 @@ export function sessionCreated(seq = 1): DurableAgentEvent {
   }, null);
 }
 
-export function runStarted(seq: number, runId = RUN_ID): DurableAgentEvent {
+export function runStarted(
+  seq: number,
+  runId = RUN_ID,
+  planningEnabled?: boolean,
+): DurableAgentEvent {
   return contextEvent(seq, "run.started", {
     promptPreview: "任务",
     limits: { maxIterations: 30, maxDurationMs: 600_000 },
+    ...(planningEnabled === undefined ? {} : { planningEnabled }),
   }, runId);
 }
 
@@ -110,6 +115,77 @@ export function manyCompletedRuns(
   return events;
 }
 
+export function manyCompletedToolRuns(
+  roundCount: number,
+  outputBytes = 55_785,
+  toolsPerRound = 1,
+  newestOutputBytes?: number,
+): DurableAgentEvent[] {
+  const events: DurableAgentEvent[] = [sessionCreated()];
+  let seq = 2;
+  let toolIndex = 1;
+  for (let index = 1; index <= roundCount; index += 1) {
+    const runId = numberedRunId(index);
+    events.push(
+      runStarted(seq++, runId),
+      contextEvent(seq++, "user.message", { content: `脱敏任务 ${index}` }, runId),
+      contextEvent(seq++, "model.requested", {
+        iteration: 1,
+        modelProfileId: "deepseek",
+      }, runId),
+      contextEvent(seq++, "model.completed", {
+        iteration: 1,
+        finishReason: "tool_calls",
+      }, runId),
+    );
+    const toolCallIds = Array.from({ length: toolsPerRound }, (_value, offset) => ({
+      offset,
+      toolCallId: `30000000-0000-4000-8000-${String(toolIndex++).padStart(12, "0")}`,
+    }));
+    for (const { offset, toolCallId } of toolCallIds) {
+      events.push(contextEvent(seq++, "tool.requested", {
+        toolCallId,
+        toolName: "read_file",
+        publicArguments: { path: `sanitized-${index}-${offset}.txt` },
+        argumentsTruncated: false,
+      }, runId));
+    }
+    for (const { offset, toolCallId } of toolCallIds) {
+      events.push(
+        contextEvent(seq++, "tool.started", {
+          toolCallId,
+          toolName: "read_file",
+        }, runId),
+        contextEvent(seq++, "tool.result", {
+          toolCallId,
+          toolName: "read_file",
+          result: {
+            ok: true,
+            summary: "脱敏读取完成",
+            output: `fixture-${index}-${offset}:`.padEnd(
+              index === roundCount && offset === 0 && newestOutputBytes !== undefined
+                ? newestOutputBytes
+                : outputBytes,
+              "x",
+            ),
+            metadata: { sha256: "0".repeat(64) },
+          },
+        }, runId),
+      );
+    }
+    events.push(contextEvent(seq++, "run.completed", {
+      iterations: 1,
+      durationMs: 1,
+    }, runId));
+  }
+  const activeId = numberedRunId(roundCount + 1);
+  events.push(
+    runStarted(seq++, activeId),
+    contextEvent(seq, "user.message", { content: "继续脱敏任务" }, activeId),
+  );
+  return events;
+}
+
 export function createMemoryEventSource(
   events: readonly DurableAgentEvent[],
   maximumPageSize = Number.POSITIVE_INFINITY,
@@ -121,7 +197,7 @@ export function createMemoryEventSource(
     storageVersion: 1 as const,
     id: SESSION_ID,
     title: "测试 Session",
-    workspacePath: "/tmp/secode-context-workspace",
+    workspacePath: "/sanitized/context-workspace",
     modelProfileId: "deepseek",
     createdAt: "2026-08-28T00:00:00.000Z",
   };

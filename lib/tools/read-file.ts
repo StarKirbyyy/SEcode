@@ -74,6 +74,7 @@ export async function executeReadFile(
     );
   }
   const limited = limitToolOutput(selection.value);
+  const pageByteTruncated = limited.truncated;
   return createToolSuccess(
     "文件读取完成",
     limited.value,
@@ -83,8 +84,14 @@ export async function executeReadFile(
       endLine: selection.endLine,
       totalLines: selection.totalLines,
       sha256: content.sha256,
-      truncated: limited.truncated,
-      originalBytes: limited.originalBytes,
+      hasMore: selection.hasMore,
+      ...(selection.nextStartLine === undefined
+        ? {}
+        : { nextStartLine: selection.nextStartLine }),
+      pageLimited: selection.pageLimited,
+      pageByteTruncated,
+      truncated: selection.pageLimited || pageByteTruncated,
+      originalBytes: selection.requestedBytes,
       returnedBytes: limited.returnedBytes,
     },
   );

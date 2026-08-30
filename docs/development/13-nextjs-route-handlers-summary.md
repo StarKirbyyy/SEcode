@@ -2,13 +2,13 @@
 
 ## 1. 文档状态与审批门禁
 
-- 当前状态：待用户审批。
+- 当前状态：已批准。
 - 完成日期：2026-08-28。
 - 前置 Spec：[13-nextjs-route-handlers-spec.md](./13-nextjs-route-handlers-spec.md)，用户已于 2026-08-28 批准。
 - 前置 Task：[13-nextjs-route-handlers-tasks.md](./13-nextjs-route-handlers-tasks.md)，用户已于 2026-08-28 批准。
-- 当前允许：审阅本 Summary、阶段 13 实现及验证证据。
-- 当前禁止：阶段 14 观察、Spec、Task、UI 开发以及任何新范围实施。
-- 下一门禁：只有用户明确批准本 Summary 后，才能开始阶段 14 的观察步骤。
+- 当前允许：阶段 14 只读观察与 Spec 编写。
+- 当前禁止：阶段 14 Task 与 UI 开发，直至对应 Spec/Task 分别获批。
+- 下一门禁：阶段 14 Spec 生成后等待用户明确批准。
 
 ## 2. 阶段目标与结论
 
@@ -219,4 +219,4 @@ pnpm-lock.yaml   5b4697de2b93fab4e7f755ffe4dbb0b0aa8d082d74bb6718d0c9804ec2dce68
 
 ## 13. 审批请求
 
-请审阅本 Summary 与阶段 13 实现。批准本 Summary 只表示阶段 13 正式完成，并解锁阶段 14 的“观察 → Spec”步骤；不会自动授权开始 UI 开发。未经你的明确批准，我将停留在本门禁。
+用户已于 2026-08-28 明确批准本 Summary。阶段 13 正式完成，解锁阶段 14 的“只读观察 → Spec”步骤；阶段 14 Task 与 UI 开发仍未授权。

@@ -16,10 +16,14 @@ export function textCompletion(content: string): ModelCompletion {
   return { content, toolCalls: [], finishReason: "stop", continuation: continuation() };
 }
 
-export function toolCompletion(name: string, args: JsonObject): ModelCompletion {
+export function toolCompletion(
+  name: string,
+  args: JsonObject,
+  id = TOOL_CALL_ID,
+): ModelCompletion {
   return {
     content: null,
-    toolCalls: [{ ok: true, call: { id: TOOL_CALL_ID, name, arguments: args } }],
+    toolCalls: [{ ok: true, call: { id, name, arguments: args } }],
     finishReason: "tool_calls",
     continuation: continuation(),
   };

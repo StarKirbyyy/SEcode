@@ -14,6 +14,8 @@ import {
   type ContextTokenEstimate,
 } from "./types";
 
+const toolTokenCache = new WeakMap<object, number>();
+
 function canonicalize(value: unknown): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
@@ -89,7 +91,11 @@ export function estimateContextTokens(
       ),
     );
   }
-  const toolTokens = estimateTextTokens(canonicalJsonStringify(tools));
+  let toolTokens = toolTokenCache.get(tools as object);
+  if (toolTokens === undefined) {
+    toolTokens = estimateTextTokens(canonicalJsonStringify(tools));
+    toolTokenCache.set(tools as object, toolTokens);
+  }
   const estimatedTokens = safeAdd(
     safeAdd(messageTokens, toolTokens),
     ESTIMATED_REQUEST_OVERHEAD_TOKENS,

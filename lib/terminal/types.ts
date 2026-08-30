@@ -24,6 +24,9 @@ export type TerminalCommand =
   | Readonly<{ kind: "empty" }>
   | Readonly<{ kind: "help" }>
   | Readonly<{ kind: "status" }>
+  | Readonly<{ kind: "plan"; enabled: boolean }>
+  | Readonly<{ kind: "approve-plan"; reason?: string }>
+  | Readonly<{ kind: "reject-plan"; reason?: string }>
   | Readonly<{ kind: "approve"; reason?: string }>
   | Readonly<{ kind: "reject"; reason?: string }>
   | Readonly<{ kind: "cancel"; reason?: string }>

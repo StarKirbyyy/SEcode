@@ -172,6 +172,130 @@ describe("stage 12 manual OpenAI-compatible server", () => {
     }
   });
 
+  it("recovers a transient SSE error envelope through the production client", async () => {
+    const { server } = await start();
+    try {
+      const client = createModelClient({
+        env: {
+          OPENAI_COMPAT_BASE_URL: server.baseUrl,
+          OPENAI_COMPAT_MODEL: server.model,
+          OPENAI_COMPAT_CONTEXT_WINDOW: String(server.contextWindow),
+          OPENAI_COMPAT_SUPPORTS_THINKING: "false",
+        },
+        dependencies: { sleep: async () => undefined },
+      });
+      const completion = await client.complete({
+        profileId: "generic",
+        messages: [{ role: "user", content: "SECODE_TRANSIENT_ENVELOPE" }],
+        tools: [],
+        signal: new AbortController().signal,
+      });
+
+      expect(completion).toMatchObject({
+        content: "已压缩：保留各轮文件标记与已确认工具事实。",
+        finishReason: "stop",
+        usageComplete: false,
+      });
+      expect(server.requestCount).toBe(2);
+      expect(JSON.stringify(completion)).not.toContain("PRIVATE_FIXTURE_PROVIDER_MESSAGE");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("routes a Chinese phase request with Chinese wire tool descriptions", async () => {
+    const { server } = await start();
+    try {
+      const client = createModelClient({
+        env: {
+          OPENAI_COMPAT_BASE_URL: server.baseUrl,
+          OPENAI_COMPAT_MODEL: server.model,
+          OPENAI_COMPAT_CONTEXT_WINDOW: String(server.contextWindow),
+          OPENAI_COMPAT_SUPPORTS_THINKING: "false",
+        },
+      });
+      const completion = await client.complete({
+        profileId: "generic",
+        messages: [
+          { role: "system", content: "当前阶段：规划。" },
+          { role: "user", content: "请先读取 README.md" },
+        ],
+        tools: [...LOCAL_TOOL_DEFINITIONS].slice(0, 3),
+        signal: new AbortController().signal,
+      });
+      expect(completion).toMatchObject({
+        finishReason: "tool_calls",
+        toolCalls: [{
+          ok: true,
+          call: {
+            name: "read_file",
+            arguments: { path: "README.md", startLine: 1 },
+          },
+        }],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("provides deterministic English-first language acceptance scenarios", async () => {
+    const { server } = await start();
+    try {
+      const client = createModelClient({
+        env: {
+          OPENAI_COMPAT_BASE_URL: server.baseUrl,
+          OPENAI_COMPAT_MODEL: server.model,
+          OPENAI_COMPAT_CONTEXT_WINDOW: String(server.contextWindow),
+          OPENAI_COMPAT_SUPPORTS_THINKING: "false",
+        },
+      });
+      const first = await client.complete({
+        profileId: "generic",
+        messages: [
+          { role: "system", content: "当前阶段：正常执行。" },
+          { role: "user", content: "SECODE_ENGLISH_FINAL" },
+          { role: "system", content: "输出语言强制策略" },
+        ],
+        tools: [...LOCAL_TOOL_DEFINITIONS],
+        signal: new AbortController().signal,
+      });
+      expect(first.content).toContain("completed the requested task");
+
+      const restated = await client.complete({
+        profileId: "generic",
+        messages: [
+          { role: "system", content: "当前阶段：正常执行。" },
+          { role: "user", content: "SECODE_ENGLISH_FINAL" },
+          {
+            role: "system",
+            content: "上一条可见正文不符合输出语言强制策略，只使用简体中文重述。",
+          },
+        ],
+        tools: [...LOCAL_TOOL_DEFINITIONS],
+        signal: new AbortController().signal,
+      });
+      expect(restated.content).toContain("已完成中文重述");
+
+      const narratedTool = await client.complete({
+        profileId: "generic",
+        messages: [
+          { role: "system", content: "当前阶段：正常执行。" },
+          { role: "user", content: "SECODE_ENGLISH_TOOL_NARRATIVE" },
+          { role: "system", content: "输出语言强制策略" },
+        ],
+        tools: [...LOCAL_TOOL_DEFINITIONS],
+        signal: new AbortController().signal,
+      });
+      expect(narratedTool).toMatchObject({
+        content: "I will inspect the README before continuing.",
+        finishReason: "tool_calls",
+        toolCalls: [{ ok: true, call: { name: "read_file" } }],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves a summary through the production client when tools are disabled", async () => {
     const { server } = await start();
     try {

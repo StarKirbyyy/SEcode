@@ -13,6 +13,8 @@ const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
 const TOOL_CALL_ID = "33333333-3333-4333-8333-333333333333";
 const APPROVAL_ID = "44444444-4444-4444-8444-444444444444";
+const PLAN_ID = "55555555-5555-4555-8555-555555555555";
+const PLAN_APPROVAL_ID = "66666666-6666-4666-8666-666666666666";
 const CREATED_AT = "2026-08-27T00:00:00Z";
 
 function durable(type: string, data: JsonObject, seq: number) {
@@ -63,7 +65,21 @@ const durableFixtures = [
     {
       iteration: 1,
       finishReason: "tool_calls",
-      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      usage: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        reasoningTokens: 2,
+        cachedPromptTokens: 8,
+        cacheMissPromptTokens: 2,
+      },
+      contextCache: {
+        status: "warm",
+        reusedEvents: 4,
+        tailEvents: 1,
+        avoidedBytes: 512,
+        buildMilliseconds: 3,
+      },
     },
     5,
   ),
@@ -117,10 +133,22 @@ const durableFixtures = [
       throughSeq: 6,
       summary: "已检查入口文件",
       retainedRange: { fromSeq: 7, toSeq: 11 },
+      strategy: "model",
     },
     12,
   ),
-  durable("run.completed", { iterations: 2, durationMs: 1_500 }, 13),
+  durable(
+    "completion.evidence.rejected",
+    {
+      iteration: 2,
+      missing: ["post_change_verification"],
+      correctionAttempt: 1,
+      uncoveredScopes: ["client", "server"],
+      acceptedKinds: ["lint", "typecheck", "test", "build"],
+    },
+    13,
+  ),
+  durable("run.completed", { iterations: 2, durationMs: 1_500 }, 14),
   durable(
     "run.failed",
     {
@@ -134,6 +162,28 @@ const durableFixtures = [
     "run.interrupted",
     { reason: "进程退出", lastStableSeq: 15 },
     16,
+  ),
+  durable(
+    "plan.proposed",
+    { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, content: "完整计划" },
+    17,
+  ),
+  durable(
+    "plan.approval.resolved",
+    { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, approved: true },
+    18,
+  ),
+  durable(
+    "model.output.rejected",
+    {
+      iteration: 2,
+      reason: "language_mismatch",
+      action: "retry",
+      retryAttempt: 1,
+      contentCharacters: 58,
+      contentSha256: "a".repeat(64),
+    },
+    19,
   ),
 ];
 
@@ -157,6 +207,35 @@ describe("durable agent events", () => {
     ).toEqual(parsed);
   });
 
+  it("accepts legacy/model/fallback compactions and rejects invalid strategy combinations", () => {
+    const base = {
+      throughSeq: 6,
+      summary: "SECODE_CONTEXT_SUMMARY_V1\n已检查入口文件",
+      retainedRange: { fromSeq: 7, toSeq: 11 },
+    };
+    expect(DurableAgentEventSchema.safeParse(durable("context.compacted", base, 20)).success)
+      .toBe(true);
+    expect(DurableAgentEventSchema.safeParse(durable("context.compacted", {
+      ...base,
+      strategy: "model",
+    }, 20)).success).toBe(true);
+    expect(DurableAgentEventSchema.safeParse(durable("context.compacted", {
+      ...base,
+      strategy: "deterministic_fallback",
+      fallbackReason: "model_timeout",
+    }, 20)).success).toBe(true);
+    expect(DurableAgentEventSchema.safeParse(durable("context.compacted", {
+      ...base,
+      strategy: "model",
+      fallbackReason: "model_timeout",
+    }, 20)).success).toBe(false);
+    expect(DurableAgentEventSchema.safeParse(durable("context.compacted", {
+      ...base,
+      strategy: "deterministic_fallback",
+      fallbackReason: "private_provider_error",
+    }, 20)).success).toBe(false);
+  });
+
   it("requires seq and a run ID for run-scoped events", () => {
     const event = durableFixtures[1];
     expect(
@@ -165,6 +244,100 @@ describe("durable agent events", () => {
     expect(
       DurableAgentEventSchema.safeParse({ ...event, runId: undefined }).success,
     ).toBe(false);
+  });
+
+  it("keeps the frozen pre-stage-17 run.started shape readable", () => {
+    const legacy = DurableAgentEventSchema.parse(durable(
+      "run.started",
+      {
+        promptPreview: "旧任务",
+        limits: { maxIterations: 30, maxDurationMs: 600_000 },
+      },
+      2,
+    ));
+    expect(legacy).toMatchObject({
+      type: "run.started",
+      data: {
+        limits: { maxIterations: 30, maxDurationMs: 600_000 },
+      },
+    });
+    if (legacy.type === "run.started") {
+      expect(legacy.data.planningEnabled).toBeUndefined();
+      expect(legacy.data.limits.maxToolCalls).toBeUndefined();
+    }
+  });
+
+  it("accepts a new run.started event without a model request limit", () => {
+    const current = DurableAgentEventSchema.parse(durable(
+      "run.started",
+      {
+        promptPreview: "新任务",
+        limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
+      },
+      20,
+    ));
+    expect(current).toMatchObject({
+      type: "run.started",
+      data: { limits: { maxToolCalls: 300, maxDurationMs: 600_000 } },
+    });
+    if (current.type === "run.started") {
+      expect(current.data.limits.maxIterations).toBeUndefined();
+    }
+  });
+
+  it("keeps plan events strict and bounded", () => {
+    expect(DurableAgentEventSchema.safeParse(durable(
+      "plan.proposed",
+      { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, content: "" },
+      20,
+    )).success).toBe(false);
+    expect(DurableAgentEventSchema.safeParse(durable(
+      "plan.approval.resolved",
+      { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, approved: true, toolCallId: TOOL_CALL_ID },
+      21,
+    )).success).toBe(false);
+  });
+
+  it("keeps rejected model output metadata strict and excludes raw content", () => {
+    const valid = durable(
+      "model.output.rejected",
+      {
+        iteration: 1,
+        reason: "language_mismatch",
+        action: "content_suppressed",
+        retryAttempt: 0,
+        contentCharacters: 42,
+        contentSha256: "b".repeat(64),
+      },
+      22,
+    );
+    expect(DurableAgentEventSchema.safeParse(valid).success).toBe(true);
+    expect(DurableAgentEventSchema.safeParse({
+      ...valid,
+      data: { ...valid.data, content: "private rejected text" },
+    }).success).toBe(false);
+    expect(DurableAgentEventSchema.safeParse({
+      ...valid,
+      data: { ...valid.data, contentSha256: "short" },
+    }).success).toBe(false);
+  });
+
+  it("keeps completion evidence fields optional and rejects absolute scopes", () => {
+    const legacy = durable("completion.evidence.rejected", {
+      iteration: 1,
+      missing: ["post_change_verification"],
+      correctionAttempt: 1,
+    }, 23);
+    expect(DurableAgentEventSchema.safeParse(legacy).success).toBe(true);
+    expect(DurableAgentEventSchema.safeParse({
+      ...legacy,
+      data: { ...legacy.data, uncoveredScopes: ["/Users/private/project"] },
+    }).success).toBe(false);
+    expect(DurableAgentEventSchema.safeParse(durable("write.dependency.rejected", {
+      iteration: 1,
+      pendingParents: ["/tmp/secret"],
+      correctionAttempt: 1,
+    }, 24)).success).toBe(false);
   });
 
   it("rejects live deltas, unknown events, wrong versions and extra fields", () => {
@@ -202,7 +375,9 @@ describe("live and combined agent events", () => {
   });
 
   it("provides durable and terminal type guards", () => {
-    const durableEvent = AgentEventSchema.parse(durableFixtures[12]);
+    const durableEvent = AgentEventSchema.parse(
+      durableFixtures.find((event) => event.type === "run.completed"),
+    );
     const liveEvent = AgentEventSchema.parse(liveFixture);
 
     expect(isDurableEvent(durableEvent)).toBe(true);

@@ -105,6 +105,17 @@ export function createContinuationToken(
   return token;
 }
 
+export function suppressContinuationContent(
+  continuation: ModelContinuation,
+): ModelContinuation {
+  const state = continuationStates.get(continuation);
+  if (state === undefined || state.turns.length === 0) return continuation;
+  const sanitized = cloneContinuationState(state);
+  const lastTurn = sanitized.turns.at(-1);
+  if (lastTurn !== undefined) lastTurn.content = null;
+  return createContinuationToken(sanitized);
+}
+
 function wireToolCall(call: ProviderToolCallState): JsonObject {
   return {
     id: call.providerId,

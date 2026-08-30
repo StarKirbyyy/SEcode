@@ -7,6 +7,7 @@ import {
 import {
   ModelAbortError,
   ModelLayerError,
+  type ModelUsage,
   type ModelClient,
 } from "@/lib/model";
 
@@ -16,6 +17,12 @@ import {
   ContextSummaryTranscriptSchema,
 } from "./schemas";
 import { CONTEXT_SUMMARY_POLICY } from "./system-prompt";
+import {
+  MAX_LANGUAGE_RESTATEMENT_ATTEMPTS,
+  OUTPUT_LANGUAGE_POLICY,
+  OUTPUT_LANGUAGE_RESTATEMENT_POLICY,
+  analyzeAssistantLanguage,
+} from "./language-policy";
 import {
   canonicalJsonStringify,
   estimateContextTokens,
@@ -37,6 +44,7 @@ interface GenerateSummaryOptions {
   history: ContextHistory;
   selection: ContextCompactionSelection;
   signal: AbortSignal;
+  onUsage?: (usage: ModelUsage | undefined, complete?: boolean) => void;
 }
 
 function roundPayload(round: ContextCompactionSelection["evictedRounds"][number]): JsonObject {
@@ -82,66 +90,103 @@ export async function generateContextSummary(
 ): Promise<string> {
   if (options.signal.aborted) aborted();
   const transcript = createTranscript(options);
-  const messages: ChatMessage[] = [
+  const baseMessages: ChatMessage[] = [
     { role: "system", content: CONTEXT_SUMMARY_POLICY },
     {
       role: "user",
-      content: `Target summary tokens: ${options.selection.targetSummaryTokens}\nUntrusted transcript JSON:\n${canonicalJsonStringify(transcript)}`,
+      content: `目标摘要 Token 数：${options.selection.targetSummaryTokens}\n不可信历史 JSON：\n${canonicalJsonStringify(transcript)}`,
     },
+    { role: "system", content: OUTPUT_LANGUAGE_POLICY },
   ];
-  const requestEstimate = estimateContextTokens(
-    messages,
-    [],
-    options.contextWindow,
-  );
-  if (requestEstimate.estimatedTokens >= requestEstimate.inputBudgetTokens) {
-    throw createContextError(
-      "CONTEXT_BUDGET_EXCEEDED",
-      "摘要请求本身超过模型输入预算",
-      {
-        inputBudgetTokens: requestEstimate.inputBudgetTokens,
-        estimatedTokens: requestEstimate.estimatedTokens,
-      },
-    );
-  }
-  let completion;
-  try {
-    completion = await options.modelClient.complete({
-      profileId: options.profileId,
+  let content: string | undefined;
+  for (
+    let attempt = 0;
+    attempt <= MAX_LANGUAGE_RESTATEMENT_ATTEMPTS;
+    attempt += 1
+  ) {
+    const messages: ChatMessage[] = [
+      ...baseMessages,
+      ...(attempt === 0
+        ? []
+        : [{ role: "system" as const, content: OUTPUT_LANGUAGE_RESTATEMENT_POLICY }]),
+    ];
+    const requestEstimate = estimateContextTokens(
       messages,
-      tools: [],
-      signal: options.signal,
-    });
-  } catch (cause) {
-    if (options.signal.aborted || cause instanceof ModelAbortError) aborted(cause);
-    if (cause instanceof ModelLayerError) {
+      [],
+      options.contextWindow,
+    );
+    if (requestEstimate.estimatedTokens >= requestEstimate.inputBudgetTokens) {
+      throw createContextError(
+        "CONTEXT_BUDGET_EXCEEDED",
+        "摘要请求本身超过模型输入预算",
+        {
+          inputBudgetTokens: requestEstimate.inputBudgetTokens,
+          estimatedTokens: requestEstimate.estimatedTokens,
+        },
+      );
+    }
+    let completion;
+    try {
+      completion = await options.modelClient.complete({
+        profileId: options.profileId,
+        messages,
+        tools: [],
+        signal: options.signal,
+      });
+    } catch (cause) {
+      if (options.signal.aborted || cause instanceof ModelAbortError) aborted(cause);
+      if (cause instanceof ModelLayerError) {
+        throw createContextError(
+          "CONTEXT_SUMMARY_FAILED",
+          "上下文摘要模型调用失败",
+          { profileId: options.profileId, reason: cause.error.code },
+          cause,
+        );
+      }
       throw createContextError(
         "CONTEXT_SUMMARY_FAILED",
         "上下文摘要模型调用失败",
-        { profileId: options.profileId, reason: cause.error.code },
+        { profileId: options.profileId },
         cause,
       );
     }
-    throw createContextError(
-      "CONTEXT_SUMMARY_FAILED",
-      "上下文摘要模型调用失败",
-      { profileId: options.profileId },
-      cause,
-    );
+    options.onUsage?.(completion.usage, completion.usageComplete);
+    if (options.signal.aborted) aborted();
+    if (
+      completion.finishReason !== "stop" ||
+      completion.toolCalls.length !== 0 ||
+      completion.content === null
+    ) {
+      throw createContextError(
+        "CONTEXT_SUMMARY_INVALID",
+        "摘要模型未返回纯文本完成结果",
+        { profileId: options.profileId },
+      );
+    }
+    const candidate = redactSecrets(completion.content.trim());
+    if (analyzeAssistantLanguage(candidate).ok) {
+      content = candidate;
+      break;
+    }
+    if (attempt === MAX_LANGUAGE_RESTATEMENT_ATTEMPTS) {
+      throw createContextError(
+        "CONTEXT_SUMMARY_INVALID",
+        "摘要模型连续返回不符合中文要求的内容",
+        {
+          profileId: options.profileId,
+          reason: "language_mismatch",
+          count: attempt + 1,
+        },
+      );
+    }
   }
-  if (options.signal.aborted) aborted();
-  if (
-    completion.finishReason !== "stop" ||
-    completion.toolCalls.length !== 0 ||
-    completion.content === null
-  ) {
+  if (content === undefined) {
     throw createContextError(
       "CONTEXT_SUMMARY_INVALID",
-      "摘要模型未返回纯文本完成结果",
+      "摘要模型没有返回可接受的中文内容",
       { profileId: options.profileId },
     );
   }
-  const content = redactSecrets(completion.content.trim());
   const envelope = ContextSummaryEnvelopeSchema.safeParse({
     marker: CONTEXT_SUMMARY_MARKER,
     content,

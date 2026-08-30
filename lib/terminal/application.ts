@@ -44,6 +44,7 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
   let interruptResolver: (() => void) | undefined;
   let closeResolver: (() => void) | undefined;
   let pendingNext: Promise<IteratorResult<string>> | undefined;
+  let planningEnabled = false;
 
   const frames = async (items: readonly TerminalFrame[]) => {
     for (const frame of items) await options.writer.write(frame);
@@ -82,7 +83,11 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
     }
     try {
       const handle = await options.runtime.startRun(
-        { sessionId: options.session.metadata.id, prompt: content },
+        {
+          sessionId: options.session.metadata.id,
+          prompt: content,
+          planningEnabled,
+        },
         {
           onEvent: async (event) => {
             try {
@@ -110,7 +115,10 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
 
   const status = async () => {
     if (!active) {
-      await notice(lastOutcome ? `空闲；最近运行 ${shortUuid(lastOutcome.runId)}：${lastOutcome.status}` : `空闲；历史稳定序号 ${options.session.snapshot.lastSeq}`);
+      const idle = lastOutcome
+        ? `空闲；最近运行 ${shortUuid(lastOutcome.runId)}：${lastOutcome.status}`
+        : `空闲；历史稳定序号 ${options.session.snapshot.lastSeq}`;
+      await notice(`${idle}；Plan Mode ${planningEnabled ? "on" : "off"}`);
       return;
     }
     const view = options.runtime.getActiveRun(active.runId);
@@ -118,7 +126,9 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
       await notice(`运行 ${shortUuid(active.runId)} 正在收尾`);
       return;
     }
-    await notice(`运行 ${shortUuid(view.runId)}：${view.status}，第 ${view.iterations} 轮${view.pendingApproval ? `，待审批 ${shortUuid(view.pendingApproval.approvalId)}` : ""}`);
+    await notice(
+      `运行 ${shortUuid(view.runId)}：${view.status}；phase=${view.phase}；模型请求 ${view.modelRequests}/${view.limits.maxModelRequests ?? "未设置"}；工具调用 ${view.toolCalls}/${view.limits.maxToolCalls}${view.pendingPlanApproval ? `；待计划审批 ${shortUuid(view.pendingPlanApproval.approvalId)}` : ""}${view.pendingApproval ? `；待工具审批 ${shortUuid(view.pendingApproval.approvalId)}` : ""}`,
+    );
   };
 
   const approval = async (approved: boolean, reason?: string) => {
@@ -128,6 +138,40 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
     const result = await options.runtime.resolveApproval(active.runId, view.pendingApproval.approvalId, { approved, ...(reason === undefined ? {} : { reason }) });
     if (result.status === "invalid") throw new TerminalLayerError(result.error);
     await notice(approved ? "审批已提交：允许。" : "审批已提交：拒绝。" );
+  };
+
+  const planApproval = async (approved: boolean, reason?: string) => {
+    if (!active) throw createTerminalError("TERMINAL_NO_ACTIVE_RUN", "当前没有活动运行");
+    const view = options.runtime.getActiveRun(active.runId);
+    if (!view?.pendingPlanApproval) {
+      throw createTerminalError(
+        "TERMINAL_NO_PENDING_APPROVAL",
+        "当前运行没有待审批计划",
+        { runId: active.runId },
+      );
+    }
+    const result = await options.runtime.resolvePlanApproval(
+      active.runId,
+      view.pendingPlanApproval.approvalId,
+      {
+        planId: view.pendingPlanApproval.planId,
+        approved,
+        ...(reason === undefined ? {} : { reason }),
+      },
+    );
+    if (result.status === "invalid") throw new TerminalLayerError(result.error);
+    await notice(approved ? "计划审批已提交：同意并继续执行。" : "计划审批已提交：拒绝执行。" );
+  };
+
+  const setPlanMode = async (enabled: boolean) => {
+    if (active) {
+      throw createTerminalError(
+        "TERMINAL_COMMAND_INVALID",
+        "运行期间不能切换 Plan Mode",
+      );
+    }
+    planningEnabled = enabled;
+    await notice(`Plan Mode 已${enabled ? "开启" : "关闭"}；对下一任务生效。`);
   };
 
   const cancel = async (reason: string) => {
@@ -142,6 +186,9 @@ export async function runTerminalApplication(options: TerminalApplicationOptions
       case "task": await startTask(command.content); return "continue";
       case "help": await notice(TERMINAL_COMMAND_HELP_TEXT); return "continue";
       case "status": await status(); return "continue";
+      case "plan": await setPlanMode(command.enabled); return "continue";
+      case "approve-plan": await planApproval(true, command.reason); return "continue";
+      case "reject-plan": await planApproval(false, command.reason); return "continue";
       case "approve": await approval(true, command.reason); return "continue";
       case "reject": await approval(false, command.reason); return "continue";
       case "cancel": await cancel(command.reason ?? "用户通过终端命令取消运行"); return "continue";

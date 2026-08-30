@@ -105,7 +105,11 @@ export async function executeListDirectory(
           relativePath,
         );
         const isLink = entry.isSymbolicLink() || resolved.followedSymbolicLink;
-        const label = isLink ? "symlink" : resolved.kind;
+        const label = isLink
+          ? "符号链接"
+          : resolved.kind === "directory"
+            ? "目录"
+            : "文件";
         lines.push(label.padEnd(10) + relativePath);
         if (
           !isLink &&
@@ -116,7 +120,7 @@ export async function executeListDirectory(
         }
       } catch (cause) {
         if (cause instanceof WorkspaceLayerError) {
-          lines.push("blocked".padEnd(10) + relativePath);
+          lines.push("已阻止".padEnd(10) + relativePath);
           blockedEntries += 1;
         } else {
           throw cause;

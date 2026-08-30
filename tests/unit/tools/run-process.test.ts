@@ -1,3 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import path from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MAX_TOOL_OUTPUT_BYTES, utf8ByteLength } from "@/lib/domain";
@@ -10,6 +14,49 @@ import {
 } from "./helpers";
 
 afterEach(cleanupAllToolFixtures);
+
+async function unusedLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (processIsAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  expect(processIsAlive(pid)).toBe(false);
+}
+
+async function waitForPidFile(targetPath: string): Promise<number> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number(await readFile(targetPath, "utf8"));
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch {
+      // The parent has not written the fixture yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("child pid fixture was not written");
+}
 
 describe("run_process", () => {
   it("passes shell metacharacters as ordinary argv", async () => {
@@ -41,7 +88,7 @@ describe("run_process", () => {
     );
     expect(result.error?.code).toBe("PROCESS_EXIT_NONZERO");
     expect(result.error?.details?.exitCode).toBe(3);
-    expect(result.output).toContain("[stderr] bad");
+    expect(result.output).toContain("[标准错误] bad");
   });
 
   it("filters sensitive environment variables", async () => {
@@ -117,5 +164,216 @@ describe("run_process", () => {
     );
     expect(result.error?.code).toBe("PROCESS_TIMEOUT");
     expect(result.metadata?.timedOut).toBe(true);
+  });
+
+  it("probes readiness, then closes an explicitly oneshot service", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: process.execPath,
+        args: [
+          "-e",
+          "require('node:http').createServer((request,response)=>{if(request.headers.cookie||request.headers.authorization){response.writeHead(500).end();return}response.writeHead(204).end()}).listen(Number(process.argv[1]),'127.0.0.1'); setInterval(()=>{},1000)",
+          String(port),
+        ],
+        cwd: ".",
+        timeoutMs: 5_000,
+        lifecycle: "oneshot",
+        readiness: {
+          url: `http://127.0.0.1:${port}/health`,
+          expectedStatus: 204,
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      metadata: {
+        ready: true,
+        readinessUrl: `http://127.0.0.1:${port}/health`,
+        readinessStatus: 204,
+        timedOut: false,
+      },
+    });
+    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toBeDefined();
+  });
+
+  it("keeps an explicitly service process alive after readiness success", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: process.execPath,
+        args: [
+          "-e",
+          "require('node:http').createServer((request,response)=>response.writeHead(200).end('ok')).listen(Number(process.argv[1]),'127.0.0.1'); setInterval(()=>{},1000)",
+          String(port),
+        ],
+        cwd: ".",
+        timeoutMs: 5_000,
+        lifecycle: "service",
+        readiness: {
+          url: `http://127.0.0.1:${port}/health`,
+          expectedStatus: 200,
+          timeoutMs: 3_000,
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      metadata: { ready: true, lifecycle: "service", pid: expect.any(Number) },
+    });
+    await expect(fetch(`http://127.0.0.1:${port}/health`)).resolves.toMatchObject({ status: 200 });
+    const pid = Number(result.metadata?.pid);
+    process.kill(-pid, "SIGTERM");
+    await waitForProcessExit(pid);
+  });
+
+  it("stops a kept-alive service when its execution signal is cancelled", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const controller = new AbortController();
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: controller.signal },
+      {
+        program: process.execPath,
+        args: [
+          "-e",
+          "require('node:http').createServer((request,response)=>response.writeHead(200).end('ok')).listen(Number(process.argv[1]),'127.0.0.1'); setInterval(()=>{},1000)",
+          String(port),
+        ],
+        cwd: ".",
+        timeoutMs: 5_000,
+        lifecycle: "service",
+        readiness: { url: `http://127.0.0.1:${port}/`, expectedStatus: 200 },
+      },
+    );
+    const pid = Number(result.metadata?.pid);
+    controller.abort("stop service");
+    await waitForProcessExit(pid);
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toBeDefined();
+  });
+
+  it("does not treat a clean exit before readiness as success", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const parentSource = "const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); process.stdout.write('CHILD_PID='+child.pid); setTimeout(()=>process.exit(0),50)";
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: process.execPath,
+        args: ["-e", parentSource],
+        cwd: ".",
+        timeoutMs: 5_000,
+        readiness: {
+          url: `http://127.0.0.1:${port}/health`,
+          expectedStatus: 200,
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error?.details?.reason).toBe("readiness_not_reached");
+    const childPid = Number(result.output?.match(/CHILD_PID=(\d+)/)?.[1]);
+    expect(Number.isInteger(childPid)).toBe(true);
+    await waitForProcessExit(childPid);
+  });
+
+  it("cleans a forked server child in the readiness process group", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const childSource = "require('node:http').createServer((request,response)=>response.writeHead(200).end('ok')).listen(Number(process.argv[1]),'127.0.0.1'); setInterval(()=>{},1000)";
+    const parentSource = `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e',${JSON.stringify(childSource)},process.argv[1]],{stdio:'ignore'}); process.stdout.write('CHILD_PID='+child.pid); setInterval(()=>{},1000)`;
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: process.execPath,
+        args: ["-e", parentSource, String(port)],
+        cwd: ".",
+        timeoutMs: 5_000,
+        readiness: {
+          url: `http://127.0.0.1:${port}/`,
+          expectedStatus: 200,
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    const childPid = Number(result.output?.match(/CHILD_PID=(\d+)/)?.[1]);
+    expect(Number.isInteger(childPid)).toBe(true);
+    await waitForProcessExit(childPid);
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toBeDefined();
+  });
+
+  it("does not follow readiness redirects and cleans up on timeout", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: process.execPath,
+        args: [
+          "-e",
+          "require('node:http').createServer((request,response)=>response.writeHead(302,{location:'/ready'}).end()).listen(Number(process.argv[1]),'127.0.0.1'); setInterval(()=>{},1000)",
+          String(port),
+        ],
+        cwd: ".",
+        timeoutMs: 1_000,
+        readiness: {
+          url: `http://127.0.0.1:${port}/redirect`,
+          expectedStatus: 200,
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "PROCESS_TIMEOUT" },
+      metadata: { ready: false, readinessStatus: 302, timedOut: true },
+    });
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toBeDefined();
+  });
+
+  it("returns a structured spawn failure in readiness mode", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const result = await executeRunProcess(
+      { workspace: fixture.workspace, signal: new AbortController().signal },
+      {
+        program: `missing-secode-program-${Date.now()}`,
+        args: [],
+        cwd: ".",
+        timeoutMs: 1_000,
+        readiness: {
+          url: `http://127.0.0.1:${port}/`,
+          expectedStatus: 200,
+        },
+      },
+    );
+    expect(result.error?.code).toBe("PROCESS_SPAWN_FAILED");
+  });
+
+  it("cancels and cleans a readiness process group", async () => {
+    const fixture = await createToolFixture();
+    const port = await unusedLoopbackPort();
+    const pidFile = path.join(fixture.project, "child.pid");
+    const parentSource = "const {spawn}=require('node:child_process'); const {writeFileSync}=require('node:fs'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); writeFileSync(process.argv[1],String(child.pid)); setInterval(()=>{},1000)";
+    const controller = new AbortController();
+    const execution = executeRunProcess(
+      { workspace: fixture.workspace, signal: controller.signal },
+      {
+        program: process.execPath,
+        args: ["-e", parentSource, pidFile],
+        cwd: ".",
+        timeoutMs: 5_000,
+        readiness: {
+          url: `http://127.0.0.1:${port}/`,
+          expectedStatus: 200,
+        },
+      },
+    );
+    const childPid = await waitForPidFile(pidFile);
+    controller.abort("cancelled");
+    await expect(execution).rejects.toBeInstanceOf(LocalToolExecutionAbortedError);
+    await waitForProcessExit(childPid);
   });
 });

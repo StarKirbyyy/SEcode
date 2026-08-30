@@ -5,6 +5,7 @@ import { createJsonlEventStore, type JsonlEventStore } from "@/lib/storage";
 import { createWorkspaceHandle } from "@/lib/workspace";
 
 import { createServerApplication } from "./application";
+import { createWorkspacePickerService } from "./workspace-picker";
 import type { ServerApplication } from "./types";
 
 const APPLICATION_KEY = Symbol.for("secode.server.application.v1");
@@ -64,6 +65,7 @@ const PRODUCTION_DEPENDENCIES: ServerBootstrapDependencies = {
       modelClient,
       runtime,
       createWorkspace: createWorkspaceHandle,
+      workspacePicker: createWorkspacePickerService(),
     }),
 };
 

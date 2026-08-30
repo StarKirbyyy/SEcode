@@ -6,18 +6,26 @@ describe("context public API", () => {
   it("exports only the approved runtime values", () => {
     expect(Object.keys(context).sort()).toEqual([
       "CONTEXT_COMPACTION_THRESHOLD_RATIO",
+      "CONTEXT_COMPACTION_STRATEGIES",
       "CONTEXT_ERROR_CODES",
       "CONTEXT_EVENT_PAGE_LIMIT",
       "CONTEXT_PROTOCOL_VERSION",
       "CONTEXT_RETAIN_RECENT_ROUNDS",
       "CONTEXT_SUMMARY_MARKER",
       "CONTEXT_SUMMARY_TARGET_RATIO",
+      "CONTEXT_SUMMARY_TIMEOUT_MS",
+      "CONTEXT_FALLBACK_REASONS",
       "ContextLayerError",
       "ESTIMATED_MESSAGE_OVERHEAD_TOKENS",
       "ESTIMATED_REQUEST_OVERHEAD_TOKENS",
       "ESTIMATED_UTF8_BYTES_PER_TOKEN",
       "MAX_CONTEXT_SUMMARY_CHARACTERS",
+      "MAX_LANGUAGE_RESTATEMENT_ATTEMPTS",
       "MAX_PINNED_UNRESOLVED_ERRORS",
+      "OUTPUT_LANGUAGE_POLICY",
+      "OUTPUT_LANGUAGE_RESTATEMENT_POLICY",
+      "SYSTEM_PROMPT_VERSION",
+      "analyzeAssistantLanguage",
       "createAgentContextProvider",
     ].sort());
   });

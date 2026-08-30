@@ -43,6 +43,10 @@ function successResponse(content = "ok"): Response {
   ]);
 }
 
+function errorEnvelopeResponse(error: Record<string, unknown>): Response {
+  return sseResponse([{ error }, "[DONE]"]);
+}
+
 async function captureError(work: Promise<unknown>): Promise<ModelLayerError> {
   try {
     await work;
@@ -158,6 +162,7 @@ describe("model HTTP client", () => {
 
     await expect(client.complete(request())).resolves.toMatchObject({
       content: "recovered",
+      usageComplete: false,
     });
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(delays).toEqual([2_000, 1_000]);
@@ -215,6 +220,45 @@ describe("model HTTP client", () => {
     expect(delays).toEqual([500]);
   });
 
+  it("retries a transient SSE error envelope before semantic output", async () => {
+    const responses = [
+      errorEnvelopeResponse({
+        type: "server_error",
+        code: "service_unavailable",
+        message: "PRIVATE_PROVIDER_MESSAGE",
+      }),
+      successResponse("after-envelope"),
+    ];
+    const fetch = vi.fn<ModelFetch>(async () => responses.shift()!);
+    const client = createModelClient({
+      env,
+      dependencies: { fetch, sleep: async () => undefined },
+    });
+
+    await expect(client.complete(request())).resolves.toMatchObject({
+      content: "after-envelope",
+      usageComplete: false,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [{ type: "authentication_error", code: "invalid_api_key" }, "MODEL_AUTH_ERROR"],
+    [{ type: "invalid_request_error", code: "bad_request" }, "MODEL_REQUEST_INVALID"],
+    [{ type: "future_error", code: "future_code" }, "MODEL_PROTOCOL_ERROR"],
+  ])("does not retry a non-transient SSE error envelope", async (providerError, code) => {
+    const fetch = vi.fn<ModelFetch>(async () => errorEnvelopeResponse({
+      ...providerError,
+      message: "PRIVATE_PROVIDER_MESSAGE",
+    }));
+    const client = createModelClient({ env, dependencies: { fetch } });
+    const error = await captureError(client.complete(request()));
+
+    expect(error.error.code).toBe(code);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(error.error)).not.toContain("PRIVATE_PROVIDER_MESSAGE");
+  });
+
   it("never retries after the first data event and marks discarded partial output", async () => {
     const prefix =
       'data: {"id":"partial","choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}\n\n';
@@ -239,6 +283,30 @@ describe("model HTTP client", () => {
       code: "MODEL_NETWORK_ERROR",
       details: { partialOutputDiscarded: true },
     });
+  });
+
+  it.each([
+    ["reasoning", { id: "semantic", choices: [{ index: 0, delta: { reasoning_content: "PRIVATE" }, finish_reason: null }] }],
+    ["tool fragment", { id: "semantic", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-x", function: { name: "read_file", arguments: "{" } }] }, finish_reason: null }] }],
+    ["usage", { id: "semantic", choices: [], usage: { prompt_tokens: 2 } }],
+    ["finish", { id: "semantic", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }],
+  ])("does not retry after accepted %s semantic output", async (_label, semanticChunk) => {
+    const fetch = vi.fn<ModelFetch>(async () => sseResponse([
+      semanticChunk,
+      { error: { type: "server_error", code: "service_unavailable" } },
+      "[DONE]",
+    ]));
+    const client = createModelClient({
+      env,
+      dependencies: { fetch, sleep: async () => undefined },
+    });
+    const error = await captureError(client.complete(request()));
+
+    expect(error.error).toMatchObject({
+      code: "MODEL_PROVIDER_UNAVAILABLE",
+      details: { partialOutputDiscarded: true },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("retries a connection error and enforces the total-attempt limit", async () => {

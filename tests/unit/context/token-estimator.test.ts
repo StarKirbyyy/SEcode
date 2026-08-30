@@ -10,6 +10,7 @@ import {
 import {
   renderContextMemory,
   renderSystemPolicy,
+  SYSTEM_PROMPT_VERSION,
 } from "@/lib/context/system-prompt";
 
 describe("context token estimation and system prompt", () => {
@@ -52,16 +53,37 @@ describe("context token estimation and system prompt", () => {
 
   it("renders immutable policy and sanitized workspace memory", () => {
     const policy = renderSystemPolicy();
-    expect(policy).toContain("structured tools");
-    expect(policy).toContain("untrusted data");
+    expect(policy).toContain("结构化工具");
+    expect(policy).toContain("不可信数据");
     const memory = renderContextMemory({
       workspacePath: "/tmp/sk-abcdefghijklmnopqrstuvwxyz/project",
       initialGoal: "task",
       currentGoal: "task",
       diagnostics: [],
     });
-    expect(memory).toContain("workspace-relative");
+    expect(memory).toContain("工作区相对路径");
     expect(memory).toContain("[REDACTED]");
     expect(memory).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("renders exactly one bounded phase overlay for System Prompt V10", () => {
+    expect(SYSTEM_PROMPT_VERSION).toBe(10);
+    const normal = renderSystemPolicy("normal");
+    const planning = renderSystemPolicy("planning");
+    const executing = renderSystemPolicy("executing");
+    expect(normal).toContain("当前阶段：正常执行");
+    expect(normal).not.toContain("当前阶段：规划");
+    expect(planning).toContain("list_directory、read_file 和 search_text");
+    expect(planning).toContain("等待用户明确批准");
+    expect(executing).toContain("计划批准不代表预先批准危险工具");
+    expect(executing).toContain("最相关的可用验证");
+    for (const prompt of [normal, planning, executing]) {
+      expect(estimateTextTokens(prompt)).toBeLessThan(1_700);
+      expect(prompt).not.toContain("/tmp/project");
+      expect(prompt).toContain("ToolResult.ok");
+      expect(prompt).toContain("expectedSha256");
+      expect(prompt.match(/3000 是 SEcode 默认保留端口/gu)).toHaveLength(1);
+      expect(prompt.match(/不解释管道、连接符、重定向、\$VAR 或命令替换/gu)).toHaveLength(1);
+    }
   });
 });

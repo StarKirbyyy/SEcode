@@ -17,6 +17,7 @@ export {
   RISK_DECISIONS,
   RISK_LEVELS,
   RISK_REASON_CODES,
+  WORKSPACE_PERMISSION_MODES,
   type ApprovalLifecycleError,
   type ApprovalLifecycleErrorCode,
   type ApprovalResolutionResult,
@@ -29,4 +30,5 @@ export {
   type RiskDecision,
   type RiskLevel,
   type RiskReasonCode,
+  type WorkspacePermissionMode,
 } from "./types";

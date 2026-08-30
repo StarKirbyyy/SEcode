@@ -43,7 +43,52 @@ describe("text file content", () => {
       value: "",
       startLine: 1,
       endLine: 0,
+      requestedEndLine: 0,
       totalLines: 0,
+      hasMore: false,
+      pageLimited: false,
+      requestedBytes: 0,
+    });
+  });
+
+  it("selects long files as consecutive pages of at most 200 lines", () => {
+    const text = Array.from({ length: 1_658 }, (_, index) => `脱敏行-${index + 1}`)
+      .join("\n");
+    const first = selectLineRange(text, 1);
+    expect(first).toMatchObject({
+      startLine: 1,
+      endLine: 200,
+      requestedEndLine: 1_658,
+      totalLines: 1_658,
+      hasMore: true,
+      nextStartLine: 201,
+      pageLimited: true,
+    });
+    expect(first.value.split("\n")).toHaveLength(200);
+
+    const last = selectLineRange(text, 1_601);
+    expect(last).toMatchObject({
+      startLine: 1_601,
+      endLine: 1_658,
+      requestedEndLine: 1_658,
+      hasMore: false,
+      pageLimited: false,
+    });
+    expect(last.value.split("\n")).toEqual(
+      Array.from({ length: 58 }, (_, index) => `脱敏行-${index + 1_601}`),
+    );
+  });
+
+  it("limits an explicit large range without skipping its requested boundary", () => {
+    const text = Array.from({ length: 300 }, (_, index) => `行-${index + 1}`)
+      .join("\n");
+    expect(selectLineRange(text, 51, 275)).toMatchObject({
+      startLine: 51,
+      endLine: 250,
+      requestedEndLine: 275,
+      nextStartLine: 251,
+      hasMore: true,
+      pageLimited: true,
     });
   });
 });

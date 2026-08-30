@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { utf8ByteLength } from "@/lib/domain";
+
 import type { ToolDependencies } from "./dependencies";
 import {
   MAX_TEXT_FILE_BYTES,
@@ -8,6 +10,19 @@ import {
 } from "./types";
 
 const fatalDecoder = new TextDecoder("utf-8", { fatal: true });
+export const READ_FILE_MAX_PAGE_LINES = 200;
+
+export interface LineRangeSelection {
+  value: string;
+  startLine: number;
+  endLine: number;
+  requestedEndLine: number;
+  totalLines: number;
+  hasMore: boolean;
+  nextStartLine?: number;
+  pageLimited: boolean;
+  requestedBytes: number;
+}
 
 export interface TextFileContent {
   bytes: Buffer;
@@ -85,26 +100,48 @@ export function selectLineRange(
   text: string,
   startLine: number,
   endLine?: number,
-): { value: string; startLine: number; endLine: number; totalLines: number } {
+): LineRangeSelection {
   if (text.length === 0) {
     if (startLine !== 1 || (endLine !== undefined && endLine !== 1)) {
       throw new RangeError("line range is outside the file");
     }
-    return { value: "", startLine: 1, endLine: 0, totalLines: 0 };
+    return {
+      value: "",
+      startLine: 1,
+      endLine: 0,
+      requestedEndLine: 0,
+      totalLines: 0,
+      hasMore: false,
+      pageLimited: false,
+      requestedBytes: 0,
+    };
   }
   const lines = text.split("\n");
   if (startLine > lines.length) {
     throw new RangeError("line range is outside the file");
   }
-  const resolvedEnd = endLine ?? lines.length;
-  if (resolvedEnd > lines.length) {
+  const requestedEndLine = endLine ?? lines.length;
+  if (requestedEndLine > lines.length) {
     throw new RangeError("line range is outside the file");
   }
+  const effectiveEndLine = Math.min(
+    requestedEndLine,
+    startLine + READ_FILE_MAX_PAGE_LINES - 1,
+  );
+  const hasMore = effectiveEndLine < requestedEndLine;
+  const requestedValue = lines
+    .slice(startLine - 1, requestedEndLine)
+    .join("\n");
   return {
-    value: lines.slice(startLine - 1, resolvedEnd).join("\n"),
+    value: lines.slice(startLine - 1, effectiveEndLine).join("\n"),
     startLine,
-    endLine: resolvedEnd,
+    endLine: effectiveEndLine,
+    requestedEndLine,
     totalLines: lines.length,
+    hasMore,
+    ...(hasMore ? { nextStartLine: effectiveEndLine + 1 } : {}),
+    pageLimited: hasMore,
+    requestedBytes: utf8ByteLength(requestedValue),
   };
 }
 

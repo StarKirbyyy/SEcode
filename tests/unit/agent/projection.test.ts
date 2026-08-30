@@ -18,6 +18,8 @@ import {
 } from "./helpers";
 
 const successResult = { ok: true, summary: "完成" };
+const PLAN_ID = "00000000-0000-4000-8000-000000000120";
+const PLAN_APPROVAL_ID = "00000000-0000-4000-8000-000000000121";
 const rejectedResult = {
   ok: false,
   summary: "用户拒绝执行该工具调用",
@@ -79,6 +81,146 @@ function toolPrefix() {
 }
 
 describe("Agent lifecycle projection", () => {
+  it("allows a model request after a rejected stop without fabricating a final", () => {
+    const events = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2),
+      createDurableEvent(3, "user.message", { content: "检查项目" }),
+      createDurableEvent(4, "model.requested", {
+        iteration: 1,
+        modelProfileId: "deepseek",
+      }),
+      createDurableEvent(5, "model.completed", {
+        iteration: 1,
+        finishReason: "stop",
+      }),
+      createDurableEvent(6, "model.output.rejected", {
+        iteration: 1,
+        reason: "language_mismatch",
+        action: "retry",
+        retryAttempt: 1,
+        contentCharacters: 20,
+        contentSha256: "c".repeat(64),
+      }),
+      createDurableEvent(7, "model.requested", {
+        iteration: 2,
+        modelProfileId: "deepseek",
+      }),
+    ];
+
+    expect(getSessionAgentSnapshot(projectAgentEvents(events))).toMatchObject({
+      status: "requesting_model",
+      activeRun: { modelRequests: 2, iterations: 2 },
+    });
+  });
+
+  it("allows a model request after a completion-evidence rejection", () => {
+    const events = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2),
+      createDurableEvent(3, "user.message", { content: "修改项目" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "completion.evidence.rejected", {
+        iteration: 1,
+        missing: ["post_change_verification"],
+        correctionAttempt: 1,
+      }),
+      createDurableEvent(7, "model.requested", { iteration: 2, modelProfileId: "deepseek" }),
+    ];
+    expect(getSessionAgentSnapshot(projectAgentEvents(events))).toMatchObject({
+      status: "requesting_model",
+      activeRun: { modelRequests: 2 },
+    });
+  });
+
+  it("allows a model request after a write-dependency rejection", () => {
+    const events = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2),
+      createDurableEvent(3, "user.message", { content: "修改项目" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "write.dependency.rejected", {
+        iteration: 1,
+        pendingParents: ["server"],
+        correctionAttempt: 1,
+      }),
+      createDurableEvent(7, "model.requested", { iteration: 2, modelProfileId: "deepseek" }),
+    ];
+    expect(getSessionAgentSnapshot(projectAgentEvents(events))).toMatchObject({
+      status: "requesting_model",
+      activeRun: { modelRequests: 2 },
+    });
+  });
+
+  it("projects pending, approved and rejected plan states without rewriting legacy fields", () => {
+    const prefix = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2, true),
+      createDurableEvent(3, "user.message", { content: "先计划" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "plan.proposed", {
+        planId: PLAN_ID,
+        approvalId: PLAN_APPROVAL_ID,
+        content: "完整计划",
+      }),
+    ];
+    expect(getSessionAgentSnapshot(projectAgentEvents(prefix))).toMatchObject({
+      status: "awaiting_plan_approval",
+      activeRun: {
+        planningEnabled: true,
+        phase: "awaiting_plan_approval",
+        modelRequests: 1,
+        toolCalls: 0,
+        pendingPlanApproval: { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID },
+        limits: { maxIterations: 30, maxModelRequests: 30, maxToolCalls: 120 },
+      },
+    });
+    const approved = [
+      ...prefix,
+      createDurableEvent(7, "plan.approval.resolved", {
+        planId: PLAN_ID,
+        approvalId: PLAN_APPROVAL_ID,
+        approved: true,
+      }),
+      createDurableEvent(8, "model.requested", { iteration: 2, modelProfileId: "deepseek" }),
+    ];
+    expect(getSessionAgentSnapshot(projectAgentEvents(approved))).toMatchObject({
+      status: "requesting_model",
+      activeRun: { phase: "executing", modelRequests: 2 },
+    });
+    const rejected = [
+      ...prefix,
+      createDurableEvent(7, "plan.approval.resolved", {
+        planId: PLAN_ID,
+        approvalId: PLAN_APPROVAL_ID,
+        approved: false,
+      }),
+      createDurableEvent(8, "run.cancelled", { reason: "用户拒绝执行计划", iterations: 1 }),
+    ];
+    expect(getSessionAgentSnapshot(projectAgentEvents(rejected))).toMatchObject({
+      status: "cancelled",
+      lastRun: { phase: "awaiting_plan_approval" },
+    });
+  });
+
+  it("projects a current run without inventing a model request limit", () => {
+    const snapshot = getSessionAgentSnapshot(projectAgentEvents([
+      createSessionCreatedEvent(1),
+      createDurableEvent(2, "run.started", {
+        promptPreview: "新任务",
+        limits: { maxToolCalls: 300, maxDurationMs: 600_000 },
+      }),
+    ]));
+
+    expect(snapshot.activeRun?.limits).toEqual({
+      maxToolCalls: 300,
+      maxDurationMs: 600_000,
+    });
+  });
+
   it("projects a complete text run deterministically", () => {
     const first = getSessionAgentSnapshot(projectAgentEvents(textSuccessEvents()));
     const second = getSessionAgentSnapshot(projectAgentEvents(textSuccessEvents()));
@@ -221,7 +363,15 @@ describe("Agent lifecycle projection", () => {
         retainedRange: { fromSeq: 2, toSeq: 3 },
       }),
     ];
-    expect(getSessionAgentSnapshot(projectAgentEvents(valid)).lastSeq).toBe(4);
+    expect(getSessionAgentSnapshot(projectAgentEvents(valid))).toMatchObject({
+      lastSeq: 4,
+      activeRun: {
+        contextCompaction: {
+          throughSeq: 1,
+          strategy: "model",
+        },
+      },
+    });
 
     const invalid = [
       ...valid,
@@ -257,6 +407,59 @@ describe("Agent lifecycle projection", () => {
 });
 
 describe("Agent lifecycle rejection", () => {
+  it("rejects plan events outside their exact lifecycle and crossed approval IDs", () => {
+    const normalProposal = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2),
+      createDurableEvent(3, "user.message", { content: "task" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "plan.proposed", { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, content: "plan" }),
+    ];
+    expect(() => projectAgentEvents(normalProposal)).toThrow(AgentLayerError);
+
+    const planning = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2, true),
+      createDurableEvent(3, "user.message", { content: "task" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "plan.proposed", { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, content: "plan" }),
+      createDurableEvent(7, "plan.approval.resolved", {
+        planId: PLAN_ID,
+        approvalId: APPROVAL_ID,
+        approved: true,
+      }),
+    ];
+    expect(() => projectAgentEvents(planning)).toThrow(AgentLayerError);
+
+    const approvedThenCrossedToolApproval = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2, true),
+      createDurableEvent(3, "user.message", { content: "task" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "stop" }),
+      createDurableEvent(6, "plan.proposed", { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, content: "plan" }),
+      createDurableEvent(7, "plan.approval.resolved", { planId: PLAN_ID, approvalId: PLAN_APPROVAL_ID, approved: true }),
+      createDurableEvent(8, "model.requested", { iteration: 2, modelProfileId: "deepseek" }),
+      createDurableEvent(9, "model.completed", { iteration: 2, finishReason: "tool_calls" }),
+      createDurableEvent(10, "tool.requested", {
+        toolCallId: TOOL_CALL_ID,
+        toolName: "run_process",
+        publicArguments: { program: "pnpm", args: ["install"] },
+        argumentsTruncated: false,
+      }),
+      createDurableEvent(11, "approval.required", {
+        approvalId: PLAN_APPROVAL_ID,
+        toolCallId: TOOL_CALL_ID,
+        reason: "危险命令",
+        toolSummary: "安装依赖",
+      }),
+    ];
+    expect(() => projectAgentEvents(approvedThenCrossedToolApproval))
+      .toThrow(AgentLayerError);
+  });
+
   it.each([
     ["event before session", [createRunStartedEvent(1)]],
     ["duplicate session", [createSessionCreatedEvent(1), createSessionCreatedEvent(2)]],

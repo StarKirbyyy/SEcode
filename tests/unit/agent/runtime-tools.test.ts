@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -123,6 +123,159 @@ describe("Agent tool planning and execution", () => {
     expect(Math.max(...requested)).toBeLessThan(started);
     expect(executionOrder).toEqual(["tool.started", "tool.started"]);
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("preflights a batch of writes whose shared parent is known missing", async () => {
+    const fixture = await createAgentFixture();
+    const sessionId = (await fixture.store.listSessions())[0].id;
+    const writes = Array.from({ length: 6 }, (_, index) => ({
+      ok: true as const,
+      call: {
+        id: `00000000-0000-4000-8000-${String(210 + index).padStart(12, "0")}`,
+        name: "write_file",
+        arguments: {
+          path: `server/file-${index + 1}.ts`,
+          content: `export const value${index + 1} = ${index + 1};\n`,
+        },
+      },
+    }));
+    const authorize = vi.fn(nativeAgentRuntimeDependencies.requestLocalToolAuthorization);
+    const execute = vi.fn(nativeAgentRuntimeDependencies.executeAuthorizedLocalTool);
+    const contextCapabilities: string[] = [];
+    const model = new QueueModelClient([
+      createToolCompletion([{
+        ok: true,
+        call: {
+          id: FIRST_CALL_ID,
+          name: "list_directory",
+          arguments: { path: ".", depth: 1 },
+        },
+      }]),
+      createToolCompletion(writes),
+      async () => {
+        expect(await readdir(fixture.workspace)).toEqual([]);
+        return createToolCompletion([{
+          ok: true,
+          call: {
+            id: "00000000-0000-4000-8000-000000000229",
+            name: "write_file",
+            arguments: { path: "server/forged.ts", content: "export {};\n" },
+          },
+        }]);
+      },
+      createToolCompletion([{
+        ok: true,
+        call: {
+          id: "00000000-0000-4000-8000-000000000230",
+          name: "run_process",
+          arguments: { program: "mkdir", args: ["server"], cwd: "." },
+        },
+      }]),
+      createToolCompletion([{
+        ok: true,
+        call: {
+          id: "00000000-0000-4000-8000-000000000231",
+          name: "list_directory",
+          arguments: { path: ".", depth: 1 },
+        },
+      }]),
+      createToolCompletion([{
+        ok: true,
+        call: {
+          id: "00000000-0000-4000-8000-000000000232",
+          name: "write_file",
+          arguments: { path: "server/file.ts", content: "export const value = 1;\n" },
+        },
+      }]),
+      createToolCompletion([{
+        ok: true,
+        call: {
+          id: "00000000-0000-4000-8000-000000000233",
+          name: "run_process",
+          arguments: { program: "tsc", args: ["--noEmit", "server/file.ts"], cwd: "." },
+        },
+      }]),
+      createTextCompletion("父目录依赖已解除。"),
+    ]);
+    const runtime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: model,
+        contextProvider: {
+          async buildContext(request) {
+            contextCapabilities.push(request.toolCapability);
+            return { messages: [{ role: "user", content: "task" }] };
+          },
+        },
+      },
+      {
+        ...nativeAgentRuntimeDependencies,
+        randomUUID: () => RUN_ID,
+        requestLocalToolAuthorization: authorize,
+        executeAuthorizedLocalTool: execute,
+      },
+    );
+
+    const handle = await runtime.startRun({
+      sessionId,
+      prompt: "写入 server 文件",
+      permissionMode: "full",
+    });
+    await expect(handle.completion).resolves.toMatchObject({ status: "completed" });
+    const events = (await fixture.store.readEvents(sessionId)).events;
+    const writeRequests = events.filter(
+      (event) => event.type === "tool.requested" && event.data.toolName === "write_file",
+    );
+    const writeResults = events.filter(
+      (event) => event.type === "tool.result" && event.data.toolName === "write_file",
+    );
+    expect(writeRequests).toHaveLength(8);
+    expect(writeResults).toHaveLength(8);
+    expect(authorize).toHaveBeenCalledTimes(5);
+    expect(execute).toHaveBeenCalledTimes(5);
+    expect(model.requests[2]?.tools.map((item) => item.function.name)).toEqual([
+      "list_directory",
+      "read_file",
+      "search_text",
+      "run_process",
+    ]);
+    expect(model.requests[5]?.tools).toHaveLength(6);
+    expect(model.requests[6]?.tools).toHaveLength(6);
+    expect(contextCapabilities).toEqual([
+      "normal",
+      "normal",
+      "dependency_recovery",
+      "dependency_recovery",
+      "dependency_recovery",
+      "normal",
+      "normal",
+      "normal",
+    ]);
+    expect(writeResults[0]).toMatchObject({
+      data: { result: { error: { code: "WORKSPACE_PARENT_NOT_FOUND" } } },
+    });
+    for (const result of writeResults.slice(1, 6)) {
+      expect(result).toMatchObject({
+        data: {
+          result: {
+            summary: "同批写入已抑制：父目录 server 已知缺失",
+            metadata: { preflightSuppressed: true, parent: "server" },
+          },
+        },
+      });
+    }
+    expect(events.filter(
+      (event) => event.type === "tool.started" && event.data.toolName === "write_file",
+    )).toEqual([expect.objectContaining({
+      data: expect.objectContaining({
+        toolCallId: "00000000-0000-4000-8000-000000000232",
+      }),
+    })]);
+    expect(events.find(
+      (event) => event.type === "tool.result" &&
+        event.data.toolName === "write_file" &&
+        event.data.result.error?.code === "TOOL_PHASE_DENIED",
+    )).toBeDefined();
   });
 
   it("turns invalid, unknown and malformed calls into direct results", async () => {

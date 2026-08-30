@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
+
 import {
   ApprovalDecisionSchema,
   type AuthorizedLocalToolInvocation,
   type PendingToolApprovalView,
 } from "@/lib/approval";
+import {
+  MAX_LANGUAGE_RESTATEMENT_ATTEMPTS,
+  OUTPUT_LANGUAGE_RESTATEMENT_POLICY,
+  ContextLayerError,
+  analyzeAssistantLanguage,
+} from "@/lib/context";
 import {
   ToolResultSchema,
   UuidSchema,
@@ -10,7 +18,9 @@ import {
   redactSecrets,
   type ApprovalId,
   type ErrorInfo,
+  type JsonObject,
   type JsonValue,
+  type PlanId,
   type RunId,
   type SessionId,
   type ToolResult,
@@ -18,13 +28,16 @@ import {
 import {
   ModelAbortError,
   ModelLayerError,
+  suppressContinuationContent,
   type ModelCompletion,
   type ModelContinuation,
   type NormalizedModelToolCall,
 } from "@/lib/model";
 import { EventStoreError } from "@/lib/storage";
 import {
+  DEPENDENCY_RECOVERY_TOOL_DEFINITIONS,
   LOCAL_TOOL_DEFINITIONS,
+  PLANNING_TOOL_DEFINITIONS,
   LocalToolExecutionAbortedError,
   type PreparedLocalToolInvocation,
 } from "@/lib/tools";
@@ -40,40 +53,116 @@ import {
   type AgentRuntimeDependencies,
 } from "./dependencies";
 import { AgentLayerError, createAgentError } from "./errors";
+import {
+  completionEvidenceCorrectionBudgetExceeded,
+  createCompletionEvidenceState,
+  getCurrentValidationEvidence,
+  getUncoveredCompletionEvidence,
+  recordCompletionEvidenceToolResult,
+  requestCompletionEvidenceCorrection,
+  type CompletionEvidenceState,
+} from "./completion-evidence";
+import {
+  AgentPlanApprovalWait,
+  AgentPlanApprovalWaitAbortedError,
+} from "./plan-approval-wait";
 import { AgentEventPublisher } from "./events";
 import {
   createAgentProjection,
   createToolErrorSignature,
+  createToolSuccessSignature,
   getSessionAgentSnapshot,
   projectAgentEvent,
   type AgentProjectionState,
 } from "./projection";
-import { StreamingSecretRedactor } from "./redaction";
 import {
   AgentContextResultSchema,
+  AgentPlanDecisionSchema,
   AgentRunRequestSchema,
   type ParsedAgentRunRequest,
 } from "./schemas";
 import {
   INVALID_TOOL_CALL_NAME,
+  MAX_CONSECUTIVE_NO_PROGRESS_READS,
   MAX_CONSECUTIVE_IDENTICAL_TOOL_ERRORS,
   MAX_PROMPT_PREVIEW_CHARACTERS,
   type ActiveAgentRunView,
   type AgentApprovalResolution,
+  type AgentPlanApprovalResolution,
+  type AgentPlanDecision,
   type AgentRunControls,
   type AgentRunHandle,
   type AgentRunOutcome,
+  type AgentRunPhase,
   type AgentRunRequest,
   type AgentRuntime,
   type AgentRuntimeOptions,
+  type AgentToolCapability,
   type SessionAgentSnapshot,
 } from "./types";
+import {
+  createWorkspaceObservationState,
+  evaluateWriteDependency,
+  updateWorkspaceObservations,
+  type WorkspaceObservationState,
+} from "./workspace-observations";
+import { StreamingVisibleTextGate } from "./streaming-visible-text";
+import {
+  createValidationRepairState,
+  recordValidationRepairToolResult,
+  type ValidationRepairState,
+} from "./validation-repair";
+import {
+  createWriteDependencyRecoveryState,
+  getPendingParentDirectories,
+  hasPendingParentDirectories,
+  recordMissingParentDirectory,
+  resolveObservedParentDirectories,
+  writeDependencyRecoveryBudgetExceeded,
+  type WriteDependencyRecoveryState,
+} from "./write-dependency-recovery";
 
 type AbortSource = "user" | "external" | "timeout" | "sink";
+
+const ACCEPTED_COMPLETION_EVIDENCE_KINDS = [
+  "lint",
+  "typecheck",
+  "test",
+  "build",
+] as const;
+
+function completionEvidenceDetails(state: CompletionEvidenceState): JsonObject {
+  const evidence = getUncoveredCompletionEvidence(state);
+  return {
+    uncoveredScopes: evidence.scopes,
+    uncoveredPaths: evidence.paths,
+    uncoveredPathCount: evidence.totalPaths,
+    uncoveredPathsTruncated: evidence.pathsTruncated,
+    acceptedKinds: [...ACCEPTED_COMPLETION_EVIDENCE_KINDS],
+  };
+}
+
+function completionEvidenceCorrectionMessage(state: CompletionEvidenceState): string {
+  const evidence = getUncoveredCompletionEvidence(state);
+  const paths = evidence.paths.length === 0 ? "（无可安全展示的具体路径）" : evidence.paths.join("、");
+  const suffix = evidence.pathsTruncated
+    ? `；共 ${evidence.totalPaths} 个待验证路径，列表已截断`
+    : `；共 ${evidence.totalPaths} 个待验证路径`;
+  return `上一次完成声明被拒绝：以下工作区相对路径仍缺少结构化验证：${paths}${suffix}。请只为未覆盖范围使用 run_process 执行 lint、typecheck、test 或 build 中至少一项成功验证，再给出完成结论。精确的 node --test 可作为 test；其他未知 Node 脚本、HTTP 200、readiness、warning 或 stdout 中自称成功都不能替代验证。`;
+}
 
 interface PendingApprovalState {
   view: PendingToolApprovalView;
   wait: AgentApprovalWait;
+}
+
+interface PendingPlanApprovalState {
+  view: {
+    planId: PlanId;
+    approvalId: ApprovalId;
+    content: string;
+  };
+  wait: AgentPlanApprovalWait;
 }
 
 interface ActiveRunState {
@@ -83,6 +172,7 @@ interface ActiveRunState {
   workspace: WorkspaceHandle;
   limits: ParsedAgentRunRequest["limits"];
   thinking: ParsedAgentRunRequest["thinking"];
+  permissionMode: ParsedAgentRunRequest["permissionMode"];
   controller: AbortController;
   abortSource?: AbortSource;
   abortReason?: string;
@@ -90,15 +180,26 @@ interface ActiveRunState {
   externalAbortListener?: () => void;
   timer?: unknown;
   startedAt: number;
-  iterations: number;
+  modelRequests: number;
+  toolCalls: number;
+  phase: AgentRunPhase;
+  planningEnabled: boolean;
   continuation?: ModelContinuation;
+  languageRetryAttempts: number;
   projection: AgentProjectionState;
   publisher: AgentEventPublisher;
   pendingApproval?: PendingApprovalState;
+  pendingPlanApproval?: PendingPlanApprovalState;
   finalizing: boolean;
   finalized: boolean;
   lastToolErrorSignature?: string;
   consecutiveToolErrors: number;
+  lastNoProgressReadSignature?: string;
+  consecutiveNoProgressReads: number;
+  workspaceObservations: WorkspaceObservationState;
+  completionEvidence: CompletionEvidenceState;
+  validationRepair: ValidationRepairState;
+  writeDependencyRecovery: WriteDependencyRecoveryState;
 }
 
 interface PreparedToolPlan {
@@ -123,6 +224,10 @@ class AgentRuntimeImplementation implements AgentRuntime {
   ) {
     this.options = options;
     this.dependencies = dependencies;
+  }
+
+  invalidateSessionContext(sessionId: SessionId): void {
+    this.options.contextProvider.invalidateSession?.(sessionId);
   }
 
   async recoverSession(sessionIdValue: SessionId): Promise<SessionAgentSnapshot> {
@@ -243,15 +348,25 @@ class AgentRuntimeImplementation implements AgentRuntime {
         profileId: profile.id,
         workspace,
         limits: parsed.limits,
-        thinking: parsed.thinking,
+      thinking: parsed.thinking,
+      permissionMode: parsed.permissionMode,
         controller,
         startedAt: this.dependencies.monotonicNow(),
-        iterations: 0,
+        modelRequests: 0,
+        toolCalls: 0,
+        planningEnabled: parsed.planningEnabled,
+        phase: parsed.planningEnabled ? "planning" : "normal",
+        languageRetryAttempts: 0,
         projection,
         publisher,
         finalizing: false,
         finalized: false,
         consecutiveToolErrors: 0,
+        consecutiveNoProgressReads: 0,
+        workspaceObservations: createWorkspaceObservationState(),
+        completionEvidence: createCompletionEvidenceState(),
+        validationRepair: createValidationRepairState(),
+        writeDependencyRecovery: createWriteDependencyRecoveryState(),
       };
       activeHolder.current = active;
 
@@ -268,7 +383,14 @@ class AgentRuntimeImplementation implements AgentRuntime {
           runId,
           data: {
             promptPreview: prompt.slice(0, MAX_PROMPT_PREVIEW_CHARACTERS),
-            limits: parsed.limits,
+            planningEnabled: parsed.planningEnabled,
+            limits: {
+              ...(parsed.limits.maxModelRequests === undefined
+                ? {}
+                : { maxIterations: parsed.limits.maxModelRequests }),
+              maxToolCalls: parsed.limits.maxToolCalls,
+              maxDurationMs: parsed.limits.maxDurationMs,
+            },
           },
         });
       } catch (cause) {
@@ -374,6 +496,65 @@ class AgentRuntimeImplementation implements AgentRuntime {
     return Object.freeze({ status: "resolved", approved: decision.approved });
   }
 
+  async resolvePlanApproval(
+    runId: RunId,
+    approvalId: ApprovalId,
+    decisionValue: AgentPlanDecision,
+  ): Promise<AgentPlanApprovalResolution> {
+    const active = this.activeByRun.get(runId);
+    if (active === undefined || active.finalized) {
+      return this.invalidPlanApproval("AGENT_RUN_NOT_FOUND", "没有找到当前运行");
+    }
+    if (active.controller.signal.aborted || active.finalizing) {
+      return this.invalidPlanApproval(
+        "AGENT_PLAN_NOT_PENDING",
+        "运行正在终止，不能再处理计划审批",
+      );
+    }
+    const pending = active.pendingPlanApproval;
+    if (pending === undefined || active.phase !== "awaiting_plan_approval") {
+      return this.invalidPlanApproval(
+        "AGENT_PLAN_NOT_PENDING",
+        "当前运行没有待审批计划",
+      );
+    }
+    const parsed = AgentPlanDecisionSchema.safeParse(decisionValue);
+    if (
+      !parsed.success ||
+      parsed.data.planId !== pending.view.planId ||
+      approvalId !== pending.view.approvalId
+    ) {
+      return this.invalidPlanApproval(
+        "AGENT_PLAN_APPROVAL_INVALID",
+        "计划审批标识或决定格式无效",
+      );
+    }
+    const reason = parsed.data.reason === undefined
+      ? undefined
+      : this.sanitizeReason(parsed.data.reason, "");
+    await active.publisher.append({
+      type: "plan.approval.resolved",
+      runId,
+      data: {
+        planId: pending.view.planId,
+        approvalId: pending.view.approvalId,
+        approved: parsed.data.approved,
+        ...(reason === undefined ? {} : { reason }),
+      },
+    });
+
+    active.pendingPlanApproval = undefined;
+    if (parsed.data.approved) {
+      active.phase = "executing";
+      active.continuation = undefined;
+    }
+    pending.wait.resolve({
+      approved: parsed.data.approved,
+      ...(reason === undefined ? {} : { reason }),
+    });
+    return Object.freeze({ status: "resolved", approved: parsed.data.approved });
+  }
+
   getActiveRun(runId: RunId): ActiveAgentRunView | undefined {
     const active = this.activeByRun.get(runId);
     if (active === undefined || active.finalized) return undefined;
@@ -383,10 +564,18 @@ class AgentRuntimeImplementation implements AgentRuntime {
       sessionId: active.sessionId,
       runId: active.runId,
       status: snapshot.status,
-      iterations: active.iterations,
+      iterations: active.modelRequests,
+      modelRequests: active.modelRequests,
+      toolCalls: active.toolCalls,
+      phase: active.phase,
+      planningEnabled: active.planningEnabled,
+      limits: snapshot.limits,
       ...(snapshot.pendingApproval === undefined
         ? {}
         : { pendingApproval: snapshot.pendingApproval }),
+      ...(snapshot.pendingPlanApproval === undefined
+        ? {}
+        : { pendingPlanApproval: snapshot.pendingPlanApproval }),
     });
   }
 
@@ -518,6 +707,7 @@ class AgentRuntimeImplementation implements AgentRuntime {
     active.abortSource = source;
     active.abortReason = this.sanitizeReason(reason, "运行已取消");
     active.pendingApproval?.wait.abort();
+    active.pendingPlanApproval?.wait.abort();
     active.controller.abort();
     return true;
   }
@@ -542,15 +732,42 @@ class AgentRuntimeImplementation implements AgentRuntime {
 
       while (true) {
         this.throwIfAborted(active);
-        if (active.iterations >= active.limits.maxIterations) {
+        if (writeDependencyRecoveryBudgetExceeded(
+          active.writeDependencyRecovery,
+          active.modelRequests,
+          active.toolCalls,
+        )) {
+          throw createAgentError(
+            "AGENT_WRITE_DEPENDENCY_UNRESOLVED",
+            "写入父目录依赖未在局部预算内解除",
+            { pendingParents: getPendingParentDirectories(active.writeDependencyRecovery) },
+          );
+        }
+        if (completionEvidenceCorrectionBudgetExceeded(
+          active.completionEvidence,
+          active.modelRequests,
+          active.toolCalls,
+        )) {
+          throw createAgentError(
+            "AGENT_COMPLETION_EVIDENCE_MISSING",
+            "运行未完成：变更后验证未在局部纠正预算内补齐；修改已保留，请补充认可验证后继续",
+            completionEvidenceDetails(active.completionEvidence),
+          );
+        }
+        const maxModelRequests = active.limits.maxModelRequests;
+        if (
+          maxModelRequests !== undefined &&
+          active.modelRequests >= maxModelRequests
+        ) {
           throw createAgentError(
             "AGENT_ITERATION_LIMIT",
-            "Agent 已达到最大模型迭代次数",
-            { maxIterations: active.limits.maxIterations },
+            "Agent 已达到最大模型请求数",
+            { maxModelRequests },
           );
         }
 
-        const nextIteration = active.iterations + 1;
+        const nextIteration = active.modelRequests + 1;
+        const toolCapability = this.toolCapability(active);
         let context;
         try {
           const rawContext = await this.options.contextProvider.buildContext({
@@ -558,14 +775,31 @@ class AgentRuntimeImplementation implements AgentRuntime {
             runId: active.runId,
             iteration: nextIteration,
             signal: active.controller.signal,
+            toolCapability,
           });
           context = AgentContextResultSchema.parse(rawContext);
         } catch (cause) {
           if (active.controller.signal.aborted) throw cause;
+          let contextDetails: JsonObject | undefined;
+          if (cause instanceof ContextLayerError) {
+            contextDetails = { contextCode: cause.error.code };
+            const reason = cause.error.details?.reason;
+            if (
+              reason === "model_timeout" ||
+              reason === "model_failed" ||
+              reason === "model_output_invalid" ||
+              reason === "summary_input_over_budget" ||
+              reason === "fallback_over_budget" ||
+              reason === "projected_recent_rounds_over_budget"
+            ) contextDetails.reason = reason;
+            else if (reason === "MODEL_TIMEOUT") {
+              contextDetails.reason = "model_timeout";
+            }
+          }
           throw createAgentError(
             "AGENT_CONTEXT_FAILED",
             "模型上下文构建失败",
-            undefined,
+            contextDetails,
             cause,
           );
         }
@@ -575,7 +809,10 @@ class AgentRuntimeImplementation implements AgentRuntime {
           await active.publisher.append({
             type: "context.compacted",
             runId: active.runId,
-            data: context.compaction,
+            data: {
+              ...context.compaction,
+              strategy: context.compaction.strategy ?? "model",
+            },
           });
           this.throwIfAborted(active);
         }
@@ -584,31 +821,55 @@ class AgentRuntimeImplementation implements AgentRuntime {
           runId: active.runId,
           data: { iteration: nextIteration, modelProfileId: active.profileId },
         });
-        active.iterations = nextIteration;
+        active.modelRequests = nextIteration;
 
-        const redactor = new StreamingSecretRedactor();
         let completion: ModelCompletion;
+        const visibleGate = new StreamingVisibleTextGate(async (content) => {
+          await active.publisher.publishLive(content, nextIteration);
+          this.throwIfAborted(active);
+        });
+        let publishedCharacters = 0;
         try {
           completion = await this.options.modelClient.complete({
             profileId: active.profileId,
-            messages: [...context.messages],
-            tools: [...LOCAL_TOOL_DEFINITIONS],
+            messages: [
+              ...context.messages,
+              ...(active.languageRetryAttempts === 0
+                ? []
+                : [{
+                    role: "system" as const,
+                    content: OUTPUT_LANGUAGE_RESTATEMENT_POLICY,
+                  }]),
+              ...(active.completionEvidence.correctionAttempts === 0
+                ? []
+                : [{
+                    role: "system" as const,
+                    content: completionEvidenceCorrectionMessage(active.completionEvidence),
+                  }]),
+              ...(getCurrentValidationEvidence(active.completionEvidence).length === 0
+                ? []
+                : [{
+                    role: "system" as const,
+                    content: `当前 run 仍有效的结构化验证事实（无需无条件重复；后续覆盖范围 mutation 会使对应事实失效）：${getCurrentValidationEvidence(active.completionEvidence).map((item) => `${item.kind}@${item.cwd}#${item.seq}`).join("、")}。`,
+                  }]),
+              ...(!hasPendingParentDirectories(active.writeDependencyRecovery)
+                ? []
+                : [{
+                    role: "system" as const,
+                    content: `写入依赖恢复：以下工作区相对父目录已知缺失：${getPendingParentDirectories(active.writeDependencyRecovery).join("、")}。请先用 run_process 显式创建目录，再用完整 list_directory 重新观察。恢复前不可写入或替换文件。`,
+                  }]),
+            ],
+            tools: [...this.toolDefinitions(toolCapability)],
             signal: active.controller.signal,
             ...(active.continuation === undefined
               ? {}
               : { continuation: active.continuation }),
             ...(active.thinking === undefined ? {} : { thinking: active.thinking }),
-            onTextDelta: async (content) => {
-              const sanitized = redactor.push(content);
-              if (sanitized.length > 0) {
-                await active.publisher.publishLive(sanitized);
-              }
-            },
+            onTextDelta: (content) => visibleGate.push(content),
           });
-          const tail = redactor.finish();
-          if (tail.length > 0) await active.publisher.publishLive(tail);
+          publishedCharacters = (await visibleGate.finish()).publishedCharacters;
         } catch (cause) {
-          redactor.abort();
+          visibleGate.abort();
           throw cause;
         }
 
@@ -633,15 +894,116 @@ class AgentRuntimeImplementation implements AgentRuntime {
                     ...(completion.usage.totalTokens === undefined
                       ? {}
                       : { totalTokens: completion.usage.totalTokens }),
+                    ...(completion.usage.reasoningTokens === undefined
+                      ? {}
+                      : { reasoningTokens: completion.usage.reasoningTokens }),
+                    ...(completion.usage.cachedPromptTokens === undefined
+                      ? {}
+                      : { cachedPromptTokens: completion.usage.cachedPromptTokens }),
+                    ...(completion.usage.cacheMissPromptTokens === undefined
+                      ? {}
+                      : { cacheMissPromptTokens: completion.usage.cacheMissPromptTokens }),
                   },
                 }),
+            ...(completion.usageComplete === undefined
+              ? {}
+              : { usageComplete: completion.usageComplete }),
+            ...(context.contextCache === undefined
+              ? {}
+              : { contextCache: context.contextCache }),
           },
         });
 
         if (completion.finishReason === "stop") {
-          return await this.completeTextRun(active, completion.content);
+          const content = this.visibleContent(completion.content);
+          this.assertVisibleContentSize(content);
+          if (!analyzeAssistantLanguage(content).ok) {
+            await this.rejectStopContent(active, nextIteration, content);
+            continue;
+          }
+          active.languageRetryAttempts = 0;
+          if (active.phase === "planning") {
+            const approved = await this.proposeAndAwaitPlan(active, content);
+            if (!approved) {
+              return await this.finishCancelled(active, "用户拒绝执行计划");
+            }
+            continue;
+          }
+          if (hasPendingParentDirectories(active.writeDependencyRecovery)) {
+            active.writeDependencyRecovery.stopAttempts += 1;
+            active.continuation = undefined;
+            if (active.writeDependencyRecovery.stopAttempts >= 2) {
+              throw createAgentError(
+                "AGENT_WRITE_DEPENDENCY_UNRESOLVED",
+                "写入父目录依赖仍未解除",
+                { pendingParents: getPendingParentDirectories(active.writeDependencyRecovery) },
+              );
+            }
+            await active.publisher.append({
+              type: "write.dependency.rejected",
+              runId: active.runId,
+              data: {
+                iteration: nextIteration,
+                pendingParents: getPendingParentDirectories(active.writeDependencyRecovery),
+                correctionAttempt: active.writeDependencyRecovery.stopAttempts,
+              },
+            });
+            continue;
+          }
+          if (active.completionEvidence.pendingValidation) {
+            const correctionAttempt = requestCompletionEvidenceCorrection(
+              active.completionEvidence,
+              active.modelRequests,
+              active.toolCalls,
+            );
+            if (correctionAttempt === undefined) {
+              throw createAgentError(
+                "AGENT_COMPLETION_EVIDENCE_MISSING",
+                "运行未完成：代码或配置变更后缺少成功的结构化验证；修改已保留，请补充认可验证后继续",
+                completionEvidenceDetails(active.completionEvidence),
+              );
+            }
+            active.continuation = undefined;
+            const uncovered = getUncoveredCompletionEvidence(active.completionEvidence);
+            await active.publisher.append({
+              type: "completion.evidence.rejected",
+              runId: active.runId,
+              data: {
+                iteration: nextIteration,
+                missing: ["post_change_verification"],
+                correctionAttempt,
+                uncoveredScopes: uncovered.scopes,
+                uncoveredPaths: uncovered.paths,
+                uncoveredPathCount: uncovered.totalPaths,
+                uncoveredPathsTruncated: uncovered.pathsTruncated,
+                acceptedKinds: [...ACCEPTED_COMPLETION_EVIDENCE_KINDS],
+              },
+            });
+            continue;
+          }
+          return await this.completeTextRun(
+            active,
+            content,
+            publishedCharacters === 0,
+          );
         }
-        await this.processToolCalls(active, completion);
+        if (active.languageRetryAttempts > 0) {
+          throw createAgentError(
+            "AGENT_OUTPUT_LANGUAGE_INVALID",
+            "中文重述请求返回了新的工具调用",
+          );
+        }
+        const toolCompletion = await this.applyToolNarrativePolicy(
+          active,
+          nextIteration,
+          completion,
+        );
+        active.languageRetryAttempts = 0;
+        await this.processToolCalls(
+          active,
+          toolCompletion,
+          publishedCharacters === 0,
+        );
       }
     } catch (cause) {
       if (cause instanceof EventStoreError) {
@@ -655,8 +1017,9 @@ class AgentRuntimeImplementation implements AgentRuntime {
   private async completeTextRun(
     active: ActiveRunState,
     content: string | null,
+    publishFallback: boolean,
   ): Promise<AgentRunOutcome> {
-    const sanitized = content === null ? "" : redactSecrets(content);
+    const sanitized = this.visibleContent(content);
     if (sanitized.length === 0) {
       throw createAgentError(
         "AGENT_MODEL_OUTPUT_INVALID",
@@ -669,6 +1032,10 @@ class AgentRuntimeImplementation implements AgentRuntime {
         "模型可见消息超过事件上限",
       );
     }
+    if (publishFallback) {
+      await active.publisher.publishLive(sanitized, active.modelRequests);
+    }
+    this.throwIfAborted(active);
     await active.publisher.append({
       type: "assistant.message",
       runId: active.runId,
@@ -680,21 +1047,165 @@ class AgentRuntimeImplementation implements AgentRuntime {
     await active.publisher.append({
       type: "run.completed",
       runId: active.runId,
-      data: { iterations: active.iterations, durationMs },
+      data: { iterations: active.modelRequests, durationMs },
     });
     active.finalized = true;
     return Object.freeze({
       status: "completed",
       runId: active.runId,
-      iterations: active.iterations,
+      iterations: active.modelRequests,
+      modelRequests: active.modelRequests,
+      toolCalls: active.toolCalls,
       durationMs,
     });
+  }
+
+  private visibleContent(content: string | null): string {
+    return content === null ? "" : redactSecrets(content).trim();
+  }
+
+  private assertVisibleContentSize(content: string): void {
+    if (content.length > 1_048_576) {
+      throw createAgentError(
+        "AGENT_ASSISTANT_MESSAGE_TOO_LARGE",
+        "模型可见消息超过事件上限",
+      );
+    }
+  }
+
+  private async appendLanguageRejection(
+    active: ActiveRunState,
+    iteration: number,
+    content: string,
+    action: "retry" | "content_suppressed",
+    retryAttempt: number,
+  ): Promise<void> {
+    await active.publisher.append({
+      type: "model.output.rejected",
+      runId: active.runId,
+      data: {
+        iteration,
+        reason: "language_mismatch",
+        action,
+        retryAttempt,
+        contentCharacters: content.length,
+        contentSha256: createHash("sha256").update(content).digest("hex"),
+      },
+    });
+  }
+
+  private async rejectStopContent(
+    active: ActiveRunState,
+    iteration: number,
+    content: string,
+  ): Promise<void> {
+    const rejectionNumber = active.languageRetryAttempts + 1;
+    active.languageRetryAttempts = rejectionNumber;
+    active.continuation = undefined;
+    await this.appendLanguageRejection(
+      active,
+      iteration,
+      content,
+      "retry",
+      Math.min(rejectionNumber, MAX_LANGUAGE_RESTATEMENT_ATTEMPTS),
+    );
+    if (rejectionNumber > MAX_LANGUAGE_RESTATEMENT_ATTEMPTS) {
+      throw createAgentError(
+        "AGENT_OUTPUT_LANGUAGE_INVALID",
+        "模型连续三次返回不符合简体中文要求的内容",
+        { attempts: rejectionNumber },
+      );
+    }
+  }
+
+  private async applyToolNarrativePolicy(
+    active: ActiveRunState,
+    iteration: number,
+    completion: ModelCompletion,
+  ): Promise<ModelCompletion> {
+    const content = this.visibleContent(completion.content);
+    this.assertVisibleContentSize(content);
+    if (content.length === 0 || analyzeAssistantLanguage(content).ok) {
+      return content === completion.content
+        ? completion
+        : { ...completion, content: content || null };
+    }
+    await this.appendLanguageRejection(
+      active,
+      iteration,
+      content,
+      "content_suppressed",
+      0,
+    );
+    const continuation = suppressContinuationContent(completion.continuation);
+    active.continuation = continuation;
+    return { ...completion, content: null, continuation };
+  }
+
+  private async proposeAndAwaitPlan(
+    active: ActiveRunState,
+    content: string | null,
+  ): Promise<boolean> {
+    const sanitized = content === null ? "" : redactSecrets(content).trim();
+    if (sanitized.length === 0) {
+      throw createAgentError(
+        "AGENT_MODEL_OUTPUT_INVALID",
+        "规划阶段未返回完整计划",
+      );
+    }
+    if (sanitized.length > 1_048_576) {
+      throw createAgentError(
+        "AGENT_ASSISTANT_MESSAGE_TOO_LARGE",
+        "计划正文超过事件上限",
+      );
+    }
+    const planId = UuidSchema.parse(this.dependencies.randomUUID());
+    const approvalId = UuidSchema.parse(this.dependencies.randomUUID());
+    if (planId === approvalId || planId === active.runId || approvalId === active.runId) {
+      throw createAgentError("AGENT_INTERNAL_ERROR", "计划标识发生冲突");
+    }
+    const wait = new AgentPlanApprovalWait();
+    const view = Object.freeze({ planId, approvalId, content: sanitized });
+    active.pendingPlanApproval = { view, wait };
+    try {
+      await active.publisher.append({
+        type: "plan.proposed",
+        runId: active.runId,
+        data: view,
+      });
+    } catch (cause) {
+      active.pendingPlanApproval = undefined;
+      wait.reject(cause);
+      throw cause;
+    }
+    active.phase = "awaiting_plan_approval";
+    if (active.controller.signal.aborted) wait.abort();
+    const resolution = await wait.promise;
+    return resolution.approved;
   }
 
   private async processToolCalls(
     active: ActiveRunState,
     completion: ModelCompletion,
+    publishFallback: boolean,
   ): Promise<void> {
+    if (completion.toolCalls.length === 0) {
+      throw createAgentError(
+        "AGENT_MODEL_OUTPUT_INVALID",
+        "tool_calls 完成原因未包含工具调用",
+      );
+    }
+    if (active.toolCalls + completion.toolCalls.length > active.limits.maxToolCalls) {
+      throw createAgentError(
+        "AGENT_TOOL_CALL_LIMIT",
+        "Agent 工具调用批次超过最大限制",
+        {
+          toolCalls: active.toolCalls,
+          requestedBatch: completion.toolCalls.length,
+          maxToolCalls: active.limits.maxToolCalls,
+        },
+      );
+    }
     if (completion.content !== null) {
       const content = redactSecrets(completion.content);
       if (content.length > 1_048_576) {
@@ -704,6 +1215,10 @@ class AgentRuntimeImplementation implements AgentRuntime {
         );
       }
       if (content.length > 0) {
+        if (publishFallback) {
+          await active.publisher.publishLive(content, active.modelRequests);
+        }
+        this.throwIfAborted(active);
         await active.publisher.append({
           type: "assistant.message",
           runId: active.runId,
@@ -712,7 +1227,7 @@ class AgentRuntimeImplementation implements AgentRuntime {
       }
     }
 
-    const plans = completion.toolCalls.map((call) => this.createToolPlan(call));
+    const plans = completion.toolCalls.map((call) => this.createToolPlan(active, call));
     const seen = new Set(active.projection.currentRun?.toolCallIds ?? []);
     for (const plan of plans) {
       if (seen.has(plan.toolCallId)) {
@@ -735,21 +1250,52 @@ class AgentRuntimeImplementation implements AgentRuntime {
           argumentsTruncated: plan.argumentsTruncated,
         },
       });
+      active.toolCalls += 1;
     }
+    const preflightParents = new Set<string>();
     for (const plan of plans) {
       this.throwIfAborted(active);
       let result: ToolResult;
       if (plan.directResult !== undefined) {
         result = plan.directResult;
       } else if (plan.invocation !== undefined) {
-        result = await this.authorizeAndExecute(active, plan);
+        const dependency = evaluateWriteDependency(
+          active.workspaceObservations,
+          plan.invocation,
+        );
+        if (dependency.kind === "known_missing_parent") {
+          const suppressed = preflightParents.has(dependency.parent);
+          preflightParents.add(dependency.parent);
+          recordMissingParentDirectory(
+            active.writeDependencyRecovery,
+            dependency.parent,
+            active.modelRequests,
+            active.toolCalls,
+          );
+          result = this.createMissingParentPreflightResult(
+            dependency.parent,
+            plan.invocation,
+            suppressed,
+          );
+        } else {
+          result = await this.authorizeAndExecute(active, plan);
+        }
+        updateWorkspaceObservations(
+          active.workspaceObservations,
+          plan.invocation,
+          result,
+        );
+        resolveObservedParentDirectories(
+          active.writeDependencyRecovery,
+          active.workspaceObservations,
+        );
       } else {
         throw createAgentError(
           "AGENT_INTERNAL_ERROR",
           "工具计划缺少执行或结果",
         );
       }
-      await active.publisher.append({
+      const resultEvent = await active.publisher.append({
         type: "tool.result",
         runId: active.runId,
         data: {
@@ -758,11 +1304,94 @@ class AgentRuntimeImplementation implements AgentRuntime {
           result,
         },
       });
+      if (plan.invocation !== undefined) {
+        recordCompletionEvidenceToolResult(
+          active.completionEvidence,
+          resultEvent.seq,
+          plan.invocation,
+          result,
+        );
+        const repair = recordValidationRepairToolResult(
+          active.validationRepair,
+          plan.invocation,
+          result,
+        );
+        if (repair.kind === "validator_failure" && repair.warning) {
+          await active.publisher.append({
+            type: "validation.repair.warning",
+            runId: active.runId,
+            data: {
+              iteration: active.modelRequests,
+              verificationKind: repair.verificationKind,
+              cwd: repair.cwd,
+              failedAttempts: repair.failedAttempts,
+              repeatedDiagnostic: repair.repeatedDiagnostic,
+              mutatedPaths: repair.mutatedPaths,
+              mutatedPathCount: repair.mutatedPathCount,
+              mutatedPathsTruncated: repair.mutatedPathsTruncated,
+            },
+          });
+          if (repair.shouldFail) {
+            throw createAgentError(
+              "AGENT_VALIDATION_NO_PROGRESS",
+              "同一验证诊断在修改后重复出现三次，运行已停止以避免继续无效修复",
+              {
+                verificationKind: repair.verificationKind,
+                cwd: repair.cwd,
+                failedAttempts: repair.failedAttempts,
+                repeatedDiagnostic: repair.repeatedDiagnostic,
+                mutatedPaths: repair.mutatedPaths,
+                mutatedPathCount: repair.mutatedPathCount,
+                mutatedPathsTruncated: repair.mutatedPathsTruncated,
+              },
+            );
+          }
+        }
+      }
       this.updateToolErrorStreak(active, plan, result);
+      this.updateNoProgressReadStreak(active, plan, result);
     }
   }
 
-  private createToolPlan(call: NormalizedModelToolCall): PreparedToolPlan {
+  private createMissingParentPreflightResult(
+    parent: string,
+    invocation: PreparedLocalToolInvocation,
+    suppressed: boolean,
+  ): ToolResult {
+    const target = invocation.name === "write_file"
+      ? invocation.arguments.path
+      : parent;
+    const summary = suppressed
+      ? `同批写入已抑制：父目录 ${parent} 已知缺失`
+      : `父目录 ${parent} 已由本 run 的完整目录列表证明缺失`;
+    return ToolResultSchema.parse({
+      ok: false,
+      summary,
+      metadata: {
+        preflightSuppressed: suppressed,
+        parent,
+      },
+      error: {
+        code: "WORKSPACE_PARENT_NOT_FOUND",
+        message: suppressed
+          ? `同批写入未执行：父目录 ${parent} 已知缺失`
+          : `写入 ${target} 前发现父目录 ${parent} 已知缺失；请先创建目录并重新观察`,
+        recoverable: true,
+        details: {
+          relativePath: target,
+          parent,
+          reason: suppressed
+            ? "known_missing_parent_batch_suppressed"
+            : "known_missing_parent_preflight",
+        },
+      },
+    });
+  }
+
+  private createToolPlan(
+    active: ActiveRunState,
+    call: NormalizedModelToolCall,
+  ): PreparedToolPlan {
     if (!call.ok) {
       const projection = createPublicToolArguments({
         name: call.name,
@@ -781,6 +1410,50 @@ class AgentRuntimeImplementation implements AgentRuntime {
         }),
       };
     }
+    if (
+      active.phase === "planning" &&
+      call.call.name !== "list_directory" &&
+      call.call.name !== "read_file" &&
+      call.call.name !== "search_text"
+    ) {
+      const projection = createPublicToolArguments(call.call.arguments);
+      return {
+        toolCallId: call.call.id,
+        toolName: call.call.name,
+        publicArguments: projection.publicArguments,
+        argumentsTruncated: projection.truncated,
+        directResult: ToolResultSchema.parse({
+          ok: false,
+          summary: "规划阶段禁止使用此工具",
+          error: {
+            code: "TOOL_PHASE_DENIED",
+            message: "规划阶段仅允许使用目录列表、文件读取和文本搜索工具",
+            recoverable: true,
+          },
+        }),
+      };
+    }
+    if (
+      hasPendingParentDirectories(active.writeDependencyRecovery) &&
+      (call.call.name === "write_file" || call.call.name === "replace_in_file")
+    ) {
+      const projection = createPublicToolArguments(call.call.arguments);
+      return {
+        toolCallId: call.call.id,
+        toolName: call.call.name,
+        publicArguments: projection.publicArguments,
+        argumentsTruncated: projection.truncated,
+        directResult: ToolResultSchema.parse({
+          ok: false,
+          summary: "写入依赖恢复期间禁止使用写工具",
+          error: {
+            code: "TOOL_PHASE_DENIED",
+            message: "请先创建缺失父目录并用完整目录列表重新观察",
+            recoverable: true,
+          },
+        }),
+      };
+    }
     const prepared = this.dependencies.prepareLocalToolCall(call.call);
     return {
       toolCallId: call.call.id,
@@ -791,6 +1464,22 @@ class AgentRuntimeImplementation implements AgentRuntime {
         ? { invocation: prepared.invocation }
         : { directResult: prepared.result }),
     };
+  }
+
+  private toolCapability(active: ActiveRunState): AgentToolCapability {
+    if (active.phase === "planning") return "planning";
+    if (hasPendingParentDirectories(active.writeDependencyRecovery)) {
+      return "dependency_recovery";
+    }
+    return "normal";
+  }
+
+  private toolDefinitions(capability: AgentToolCapability) {
+    switch (capability) {
+      case "planning": return PLANNING_TOOL_DEFINITIONS;
+      case "dependency_recovery": return DEPENDENCY_RECOVERY_TOOL_DEFINITIONS;
+      case "normal": return LOCAL_TOOL_DEFINITIONS;
+    }
   }
 
   private async authorizeAndExecute(
@@ -824,6 +1513,26 @@ class AgentRuntimeImplementation implements AgentRuntime {
         runId: active.runId,
         data: view,
       });
+      if (active.permissionMode === "full") {
+        const resolution = this.dependencies.resolveLocalToolApproval(
+          authorization.pending,
+          view.approvalId,
+          { approved: true, reason: "工作区已启用完全访问权限" },
+        );
+        if (resolution.status !== "authorized") {
+          throw createAgentError("AGENT_APPROVAL_INVALID", "工作区权限无法解析当前审批");
+        }
+        await active.publisher.append({
+          type: "approval.resolved",
+          runId: active.runId,
+          data: {
+            approvalId: view.approvalId,
+            approved: true,
+            reason: "工作区已启用完全访问权限",
+          },
+        });
+        capability = resolution.authorization;
+      } else {
       const wait = new AgentApprovalWait(authorization.pending);
       active.pendingApproval = { view, wait };
       if (active.controller.signal.aborted) wait.abort();
@@ -831,6 +1540,7 @@ class AgentRuntimeImplementation implements AgentRuntime {
       active.pendingApproval = undefined;
       if (resolution.status === "rejected") return resolution.result;
       capability = resolution.authorization;
+      }
     }
 
     this.throwIfAborted(active);
@@ -881,6 +1591,39 @@ class AgentRuntimeImplementation implements AgentRuntime {
     }
   }
 
+  private updateNoProgressReadStreak(
+    active: ActiveRunState,
+    plan: PreparedToolPlan,
+    result: ToolResult,
+  ): void {
+    const readOnly = plan.toolName === "list_directory" ||
+      plan.toolName === "read_file" ||
+      plan.toolName === "search_text";
+    if (!readOnly || !result.ok) {
+      active.lastNoProgressReadSignature = undefined;
+      active.consecutiveNoProgressReads = 0;
+      return;
+    }
+    const signature = createToolSuccessSignature(
+      plan.toolName,
+      plan.publicArguments,
+      result,
+    );
+    if (signature === active.lastNoProgressReadSignature) {
+      active.consecutiveNoProgressReads += 1;
+    } else {
+      active.lastNoProgressReadSignature = signature;
+      active.consecutiveNoProgressReads = 1;
+    }
+    if (active.consecutiveNoProgressReads >= MAX_CONSECUTIVE_NO_PROGRESS_READS) {
+      throw createAgentError(
+        "AGENT_NO_PROGRESS_LIMIT",
+        "同一只读事实连续三次没有进展，运行已停止",
+        { toolName: plan.toolName },
+      );
+    }
+  }
+
   private async finishFromError(
     active: ActiveRunState,
     cause: unknown,
@@ -913,7 +1656,8 @@ class AgentRuntimeImplementation implements AgentRuntime {
     if (
       cause instanceof ModelAbortError ||
       cause instanceof LocalToolExecutionAbortedError ||
-      cause instanceof AgentApprovalWaitAbortedError
+      cause instanceof AgentApprovalWaitAbortedError ||
+      cause instanceof AgentPlanApprovalWaitAbortedError
     ) {
       return this.finishFailed(
         active,
@@ -948,13 +1692,15 @@ class AgentRuntimeImplementation implements AgentRuntime {
     await active.publisher.append({
       type: "run.failed",
       runId: active.runId,
-      data: { error, iterations: active.iterations },
+      data: { error, iterations: active.modelRequests },
     });
     active.finalized = true;
     return Object.freeze({
       status: "failed",
       runId: active.runId,
-      iterations: active.iterations,
+      iterations: active.modelRequests,
+      modelRequests: active.modelRequests,
+      toolCalls: active.toolCalls,
       error,
     });
   }
@@ -973,13 +1719,15 @@ class AgentRuntimeImplementation implements AgentRuntime {
     await active.publisher.append({
       type: "run.cancelled",
       runId: active.runId,
-      data: { reason, iterations: active.iterations },
+      data: { reason, iterations: active.modelRequests },
     });
     active.finalized = true;
     return Object.freeze({
       status: "cancelled",
       runId: active.runId,
-      iterations: active.iterations,
+      iterations: active.modelRequests,
+      modelRequests: active.modelRequests,
+      toolCalls: active.toolCalls,
       reason,
     });
   }
@@ -1006,6 +1754,16 @@ class AgentRuntimeImplementation implements AgentRuntime {
     });
   }
 
+  private invalidPlanApproval(
+    code: "AGENT_RUN_NOT_FOUND" | "AGENT_PLAN_NOT_PENDING" | "AGENT_PLAN_APPROVAL_INVALID",
+    message: string,
+  ): AgentPlanApprovalResolution {
+    return Object.freeze({
+      status: "invalid",
+      error: createAgentError(code, message).error,
+    });
+  }
+
   private cleanupActiveRun(active: ActiveRunState): void {
     if (active.timer !== undefined) {
       this.dependencies.clearTimer(active.timer);
@@ -1022,6 +1780,8 @@ class AgentRuntimeImplementation implements AgentRuntime {
     }
     active.pendingApproval?.wait.abort();
     active.pendingApproval = undefined;
+    active.pendingPlanApproval?.wait.abort();
+    active.pendingPlanApproval = undefined;
     active.continuation = undefined;
     active.publisher.disableSink();
     this.activeByRun.delete(active.runId);

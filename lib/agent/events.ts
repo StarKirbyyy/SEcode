@@ -57,7 +57,10 @@ export class AgentEventPublisher {
     return event;
   }
 
-  async publishLive(content: string): Promise<LiveAgentEvent | undefined> {
+  async publishLive(
+    content: string,
+    iteration?: number,
+  ): Promise<LiveAgentEvent | undefined> {
     if (content.length === 0) return undefined;
     const sanitized = redactSecrets(content);
     if (sanitized.length === 0) return undefined;
@@ -70,7 +73,10 @@ export class AgentEventPublisher {
       runId: this.runId,
       type: "assistant.delta",
       createdAt: this.dependencies.wallClockNow().toISOString(),
-      data: { content: sanitized },
+      data: {
+        content: sanitized,
+        ...(iteration === undefined ? {} : { iteration }),
+      },
     });
     this.streamSeq = event.streamSeq;
     await this.deliver(event);

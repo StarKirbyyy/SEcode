@@ -90,7 +90,15 @@ export interface ModelUsage {
   completionTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
+  cachedPromptTokens?: number;
+  cacheMissPromptTokens?: number;
 }
+
+export type ProviderCacheStatus =
+  | "reported"
+  | "partial"
+  | "unreported"
+  | "unsupported";
 
 export type NormalizedModelToolCall =
   | { ok: true; call: ToolCall }
@@ -107,6 +115,7 @@ export interface ModelCompletion {
   toolCalls: NormalizedModelToolCall[];
   finishReason: NormalizedFinishReason;
   usage?: ModelUsage;
+  usageComplete?: boolean;
   continuation: ModelContinuation;
 }
 

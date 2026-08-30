@@ -45,7 +45,7 @@ export function limitToolOutput(
     };
   }
 
-  let marker = "\n...[TRUNCATED " + originalBytes + " UTF-8 bytes]...\n";
+  let marker = "\n...[已截断 " + originalBytes + " 个 UTF-8 字节]...\n";
   if (utf8ByteLength(marker) > maxBytes) {
     marker = truncateUtf8(marker, maxBytes).value;
   }
@@ -84,7 +84,7 @@ export class BoundedTextAccumulator {
       return limitToolOutput(this.head);
     }
     return limitToolOutput(
-      this.head + "\n...[STREAM MIDDLE OMITTED]...\n" + this.tail,
+      this.head + "\n...[已省略流中间内容]...\n" + this.tail,
       MAX_TOOL_OUTPUT_BYTES,
       this.originalBytes,
     );

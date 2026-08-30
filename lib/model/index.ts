@@ -1,4 +1,5 @@
 export { createModelClient } from "./client";
+export { suppressContinuationContent } from "./chat-mapper";
 export {
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_CONTEXT_WINDOW,
@@ -30,6 +31,7 @@ export {
   type ModelRequest,
   type ModelThinkingOptions,
   type ModelUsage,
+  type ProviderCacheStatus,
   type NormalizedFinishReason,
   type NormalizedModelToolCall,
 } from "./types";
