@@ -241,3 +241,5 @@ Summary 提交用户审批前必须满足：
 - 阶段 26 Spec 修订 2 审批：用户于 2026-08-31 回复“批准”，比例化验证、软完成证据、原生 readiness 和 ≤30 请求收敛规格获批；只解锁 Task 修订 2 编写。Task 修订 2 已生成并等待独立审批，尚未授权 requirements、Production、测试、真实 provider、Git 写入、发布或部署。
 - 阶段 26 Task 修订 2 审批：用户随后再次回复“批准”，现解锁 T26R2-00～T26R2-07；T26R2-08、真实 provider、真实凭据、Git 写入、发布和部署仍未授权。
 - 阶段 26 修订 2 实施完成：T26R2-00～T26R2-07 已完成并通过 1034 项 unit/integration、coverage、51 项 E2E、双 build、diff check 和 agent-browser；Summary 修订 2 已生成并停在用户审批门。T26R2-08、真实 provider、Git 写入、发布和部署仍未授权。
+- 阶段 26 Summary 修订 2 审批：用户于 2026-08-31 明确回复“批准阶段26”，阶段 26 正式完成并解锁阶段 27 只读观察与 Spec 编写。T26R2-08 未执行且不追认为通过；真实 provider、真实凭据、Git 写入、发布和部署仍需独立授权。
+- 阶段 27 Spec 审批：用户于 2026-08-31 明确回复“批准”，阶段 27 README Spec 获批，只解锁 Task 编写；根 `README.md`、README.txt、视频、ZIP、真实 provider、Git 写入、发布和部署尚未授权。

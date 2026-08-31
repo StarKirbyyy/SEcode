@@ -32,8 +32,8 @@
 | 23 | Web 长历史分页与终态协调修复 | Summary 已批准，阶段完成；`deepseek-v4-flash` 全真浏览器验收通过 | [Spec（已批准）](./23-web-history-pagination-terminal-reconciliation-spec.md) / [Task（含已批准且已完成 T23-09）](./23-web-history-pagination-terminal-reconciliation-tasks.md) / [Summary（已批准）](./23-web-history-pagination-terminal-reconciliation-summary.md) |
 | 24 | Agent Harness 收敛效率、完成证据精确纠正与可解释失败终态 | Summary 已批准，阶段完成；T24-10 可选真实模型回归未执行且不追认为通过 | [Spec 修订 1（已批准）](./24-completion-evidence-terminal-closure-spec.md) / [Task（已批准，实施完成）](./24-completion-evidence-terminal-closure-tasks.md) / [Summary（已批准）](./24-completion-evidence-terminal-closure-summary.md) |
 | 25 | Agent 简化写入、基础 TDD、端口启动与可访问交付 | v2 自动实施完成但最新真实 run 失败；不生成成功 Summary，修复转入阶段 26 | [Spec（v2 已实施；未审 v3 草案被阶段 26 取代）](./25-agent-tdd-startup-handoff-spec.md) / [Task v2（保留实施记录）](./25-agent-tdd-startup-handoff-tasks.md) / [v2 Summary（非成功终稿）](./25-agent-tdd-startup-handoff-summary.md) |
-| 26 | Agent 测试、验收与启动收敛效率 | T26R2-00～T26R2-07 已完成；Summary 修订 2 待审批 | [Spec 修订 2（已批准）](./26-agent-convergence-efficiency-spec.md) / [Task 修订 2（已批准，实施完成）](./26-agent-convergence-efficiency-tasks-revision-2.md) / [Summary 修订 2（待审批）](./26-agent-convergence-efficiency-summary.md) / [原 Task（被取代）](./26-agent-convergence-efficiency-tasks.md) |
-| 27 | 文档、视频与最终提交 | 等待阶段 26 完成 | [原阶段 15 Spec（已被流程修订取代）](./15-documentation-video-final-submission-spec.md)；阶段 27 Spec / Task / Summary 尚未生成 |
+| 26 | Agent 测试、验收与启动收敛效率 | Summary 修订 2 已批准，阶段完成；T26R2-08 可选真实 provider 未执行 | [Spec 修订 2（已批准）](./26-agent-convergence-efficiency-spec.md) / [Task 修订 2（已批准，实施完成）](./26-agent-convergence-efficiency-tasks-revision-2.md) / [Summary 修订 2（已批准）](./26-agent-convergence-efficiency-summary.md) / [原 Task（被取代）](./26-agent-convergence-efficiency-tasks.md) |
+| 27 | 项目 README 与运行说明 | T27-00～T27-05 已完成；Summary 待用户审批 | [Spec（已批准）](./27-project-readme-spec.md) / [Task（已批准，实施完成）](./27-project-readme-tasks.md) / [Summary（待审批）](./27-project-readme-summary.md)；[原阶段 15 最终交付草稿（已被取代）](./15-documentation-video-final-submission-spec.md) |
 
 ## 需求追踪规则
 
@@ -66,6 +66,14 @@ T26-05 实施前发现 Task 把 `run_process` 工具描述事实源误写为 `li
 用户再次回复“批准”，阶段 26 Task 修订 2 获批，现解锁 T26R2-00～T26R2-07 并开始实施。T26R2-08、真实 provider、真实凭据、Git 写入、发布和部署仍未授权。
 
 T26R2-00～T26R2-07 现已完成：新普通 run 的 completion/service 最终硬门已改为一次纠正后带确定性警告正常交付，readiness 改为原生 `node:http`，Prompt 升为 V13 并增加第 20 次请求后的收尾视图。1034 项 unit/integration、coverage、51 项 E2E、双 build、diff check 与 agent-browser 均通过；Summary 修订 2 已生成并立即停在审批门。T26R2-08 仍未授权。
+
+用户于 2026-08-31 明确回复“批准阶段26”，阶段 26 Summary 修订 2 获批，阶段正式完成。用户同时要求完善 README，因此阶段 27 已完成只读观察并生成 `27-project-readme-spec.md`；当前停在 Spec 审批门，尚未授权 Task、根 README 修改、README.txt、视频、ZIP、Git 写入、发布或部署。
+
+用户随后明确回复“批准”，阶段 27 Spec 获批；现已生成 `27-project-readme-tasks.md` 并停在 Task 审批门。该批准不等价于授权修改根 README，也不授权 README.txt、视频、ZIP、真实 provider、Git 写入、发布或部署。
+
+用户再次明确回复“批准”，阶段 27 Task 获批，现解锁 T27-00～T27-05 的 README 文档实施与验证；README.txt、视频、ZIP、真实 provider、Git commit/push、发布和部署仍未授权。
+
+T27-00～T27-05 已完成：根 README 已替换为中文项目说明，命令、环境变量、六工具、CLI、17 个相对链接、安全模式、模板残留、Markdown 结构和 diff check 均通过专项核对。阶段 27 Summary 已生成并立即停在用户审批门；未运行 README.txt、视频、ZIP、真实 provider、Git commit/push、发布或部署。
 
 - 功能需求使用 `FR-*` 标识。
 - 非功能需求使用 `NFR-*` 标识。
