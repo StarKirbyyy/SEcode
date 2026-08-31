@@ -86,9 +86,6 @@ function projectArguments(
       path: arguments_.path,
       contentBytes: utf8ByteLength(content),
       contentSha256: sha256Bytes(Buffer.from(content, "utf8")),
-      ...(arguments_.expectedSha256 === undefined
-        ? {}
-        : { expectedSha256: arguments_.expectedSha256 }),
       preview: truncateUtf8(
         redactSecrets(content),
         MAX_PUBLIC_PREVIEW_BYTES,
@@ -101,7 +98,6 @@ function projectArguments(
       : [{ oldText: arguments_.oldText as string, newText: arguments_.newText as string }];
     return createPublicToolArguments({
       path: arguments_.path,
-      expectedSha256: arguments_.expectedSha256,
       replacementCount: replacements.length,
       replacements: replacements.map(({ oldText, newText }) => ({
         oldTextBytes: utf8ByteLength(oldText),

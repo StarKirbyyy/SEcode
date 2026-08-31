@@ -83,6 +83,7 @@ export interface ProjectedRunState {
   finalSeen: boolean;
   lastToolErrorSignature?: string;
   consecutiveToolErrors: number;
+  serviceHandoffCorrectionAvailable: boolean;
   terminalStatus?: Extract<
     RunStatus,
     "completed" | "failed" | "cancelled" | "interrupted"
@@ -361,13 +362,17 @@ function startModelRound(
     historyError(event, "model_request_not_at_stable_boundary");
   }
   const previous = run.currentRound;
-  if (
-    previous?.finishReason === "stop" &&
-    previous.outputRejected !== "retry" &&
-    previous.completionEvidenceRejected === undefined &&
-    previous.writeDependencyRejected === undefined
-  ) {
-    historyError(event, "model_request_after_stop");
+  if (previous?.finishReason === "stop") {
+    const hasRecordedRejection =
+      previous.outputRejected === "retry" ||
+      previous.completionEvidenceRejected !== undefined ||
+      previous.writeDependencyRejected !== undefined;
+    if (!hasRecordedRejection) {
+      if (!run.serviceHandoffCorrectionAvailable) {
+        historyError(event, "model_request_after_stop");
+      }
+      run.serviceHandoffCorrectionAvailable = false;
+    }
   }
   if (
     previous?.finishReason === "tool_calls" &&
@@ -443,6 +448,7 @@ export function projectAgentEvent(
       planApprovalIds: new Set(),
       finalSeen: false,
       consecutiveToolErrors: 0,
+      serviceHandoffCorrectionAvailable: false,
     };
     state.lastSeq = event.seq;
     return state;
@@ -698,6 +704,13 @@ export function projectAgentEvent(
         historyError(event, "planning_tool_result_invalid");
       }
       tool.result = event.data.result;
+      if (
+        tool.started &&
+        tool.toolName === "run_process" &&
+        tool.publicArguments.lifecycle === "service"
+      ) {
+        run.serviceHandoffCorrectionAvailable = true;
+      }
       {
         const signature = createToolErrorSignature(
           tool.toolName,

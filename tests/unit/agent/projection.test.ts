@@ -81,6 +81,50 @@ function toolPrefix() {
 }
 
 describe("Agent lifecycle projection", () => {
+  it("allows exactly one correction request after a service handoff stop", () => {
+    const events = [
+      createSessionCreatedEvent(1),
+      createRunStartedEvent(2),
+      createDurableEvent(3, "user.message", { content: "启动服务" }),
+      createDurableEvent(4, "model.requested", { iteration: 1, modelProfileId: "deepseek" }),
+      createDurableEvent(5, "model.completed", { iteration: 1, finishReason: "tool_calls" }),
+      createDurableEvent(6, "tool.requested", {
+        toolCallId: TOOL_CALL_ID,
+        toolName: "run_process",
+        publicArguments: {
+          program: "node",
+          args: ["server.mjs"],
+          cwd: ".",
+          lifecycle: "service",
+          readiness: { url: "http://127.0.0.1:43121/" },
+        },
+        argumentsTruncated: false,
+      }),
+      createDurableEvent(7, "tool.started", {
+        toolCallId: TOOL_CALL_ID,
+        toolName: "run_process",
+      }),
+      createDurableEvent(8, "tool.result", {
+        toolCallId: TOOL_CALL_ID,
+        toolName: "run_process",
+        result: { ok: true, summary: "服务已就绪", metadata: { ready: true } },
+      }),
+      createDurableEvent(9, "model.requested", { iteration: 2, modelProfileId: "deepseek" }),
+      createDurableEvent(10, "model.completed", { iteration: 2, finishReason: "stop" }),
+      createDurableEvent(11, "model.requested", { iteration: 3, modelProfileId: "deepseek" }),
+    ];
+
+    expect(getSessionAgentSnapshot(projectAgentEvents(events))).toMatchObject({
+      status: "requesting_model",
+      activeRun: { modelRequests: 3 },
+    });
+    expect(() => projectAgentEvents([
+      ...events,
+      createDurableEvent(12, "model.completed", { iteration: 3, finishReason: "stop" }),
+      createDurableEvent(13, "model.requested", { iteration: 4, modelProfileId: "deepseek" }),
+    ])).toThrow(AgentLayerError);
+  });
+
   it("allows a model request after a rejected stop without fabricating a final", () => {
     const events = [
       createSessionCreatedEvent(1),

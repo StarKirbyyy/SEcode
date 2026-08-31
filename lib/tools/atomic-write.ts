@@ -27,10 +27,13 @@ export interface AtomicWriteResult {
   bytes: number;
 }
 
+export interface AtomicWriteOptions {
+  expectedCurrentSha256?: string;
+}
+
 export class AtomicWriteError extends Error {
   constructor(
     readonly code:
-      | "invalid_hash_semantics"
       | "stale"
       | "content"
       | "atomic_io",
@@ -74,9 +77,9 @@ export async function atomicWriteWorkspaceFile(
   workspace: WorkspaceHandle,
   relativePath: string,
   targetBytes: Buffer,
-  expectedSha256: string | undefined,
   signal: AbortSignal,
   dependencies: ToolDependencies = nativeToolDependencies,
+  options: AtomicWriteOptions = {},
 ): Promise<AtomicWriteResult> {
   throwIfAborted(signal);
   const writable = await resolveWritableWorkspacePath(workspace, relativePath, {
@@ -86,15 +89,15 @@ export async function atomicWriteWorkspaceFile(
     | Awaited<ReturnType<typeof readTextFileAbsolute>>
     | undefined;
   if (writable.existed) {
-    if (expectedSha256 === undefined) {
-      throw new AtomicWriteError("invalid_hash_semantics");
-    }
     existing = await existingHash(writable.absolutePath, dependencies);
-    if (existing.sha256 !== expectedSha256) {
+    if (
+      options.expectedCurrentSha256 !== undefined &&
+      existing.sha256 !== options.expectedCurrentSha256
+    ) {
       throw new AtomicWriteError("stale");
     }
-  } else if (expectedSha256 !== undefined) {
-    throw new AtomicWriteError("invalid_hash_semantics");
+  } else if (options.expectedCurrentSha256 !== undefined) {
+    throw new AtomicWriteError("stale");
   }
 
   const afterSha256 = sha256Bytes(targetBytes);
@@ -145,7 +148,7 @@ export async function atomicWriteWorkspaceFile(
     await revalidateWritableWorkspacePath(workspace, writable);
     if (writable.existed) {
       const current = await existingHash(writable.absolutePath, dependencies);
-      if (current.sha256 !== expectedSha256) {
+      if (current.sha256 !== existing?.sha256) {
         throw new AtomicWriteError("stale");
       }
     }

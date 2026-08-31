@@ -115,12 +115,13 @@ describe("AgentContextResultSchema", () => {
 
 describe("AgentLayerError", () => {
   it("defines all approved error codes", () => {
-    expect(AGENT_ERROR_CODES).toHaveLength(24);
-    expect(new Set(AGENT_ERROR_CODES).size).toBe(24);
+    expect(AGENT_ERROR_CODES).toHaveLength(25);
+    expect(new Set(AGENT_ERROR_CODES).size).toBe(25);
     expect(AGENT_ERROR_CODES).toContain("AGENT_OUTPUT_LANGUAGE_INVALID");
     expect(AGENT_ERROR_CODES).toContain("AGENT_VALIDATION_NO_PROGRESS");
     expect(AGENT_ERROR_CODES).toContain("AGENT_COMPLETION_EVIDENCE_MISSING");
     expect(AGENT_ERROR_CODES).toContain("AGENT_WRITE_DEPENDENCY_UNRESOLVED");
+    expect(AGENT_ERROR_CODES).toContain("AGENT_FINAL_HANDOFF_INCOMPLETE");
   });
 
   it("keeps causes non-enumerable and sanitizes details", () => {

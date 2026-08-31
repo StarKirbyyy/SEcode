@@ -3,7 +3,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sha256Bytes } from "@/lib/tools/file-content";
+import { nativeToolDependencies } from "@/lib/tools/dependencies";
+import { executeReplaceInFile } from "@/lib/tools/replace-in-file";
 
 import {
   cleanupAllToolFixtures,
@@ -21,7 +22,6 @@ describe("replace_in_file", () => {
     await fs.writeFile(target, original);
     const result = await runTool(fixture.workspace, "replace_in_file", {
       path: "README.md",
-      expectedSha256: sha256Bytes(Buffer.from(original)),
       replacements: [
         { oldText: "alpha=old", newText: "alpha=new" },
         { oldText: "beta=old", newText: "beta=new" },
@@ -43,7 +43,6 @@ describe("replace_in_file", () => {
       path: "a.txt",
       oldText: "世界",
       newText: "SEcode",
-      expectedSha256: sha256Bytes(Buffer.from("hello 世界")),
     });
     expect(result.ok).toBe(true);
     expect(result.metadata?.replacedOccurrences).toBe(1);
@@ -55,19 +54,16 @@ describe("replace_in_file", () => {
     const target = path.join(fixture.project, "a.txt");
     const original = "aaaa";
     await fs.writeFile(target, original);
-    const hash = sha256Bytes(Buffer.from(original));
     const absent = await runTool(fixture.workspace, "replace_in_file", {
       path: "a.txt",
       oldText: "z",
       newText: "x",
-      expectedSha256: hash,
     });
     expect(absent.error?.code).toBe("FILE_MATCH_NOT_FOUND");
     const many = await runTool(fixture.workspace, "replace_in_file", {
       path: "a.txt",
       oldText: "aa",
       newText: "x",
-      expectedSha256: hash,
     });
     expect(many.error?.code).toBe("FILE_MATCH_NOT_UNIQUE");
     await expect(fs.readFile(target, "utf8")).resolves.toBe(original);
@@ -80,7 +76,6 @@ describe("replace_in_file", () => {
     await fs.writeFile(target, original);
     const result = await runTool(fixture.workspace, "replace_in_file", {
       path: "a.txt",
-      expectedSha256: sha256Bytes(Buffer.from(original)),
       replacements: [
         { oldText: "ab", newText: "x" },
         { oldText: "bc", newText: "y" },
@@ -91,5 +86,35 @@ describe("replace_in_file", () => {
       error: { code: "FILE_MATCH_NOT_UNIQUE", details: { reason: "replacement_overlap" } },
     });
     await expect(fs.readFile(target, "utf8")).resolves.toBe(original);
+  });
+
+  it("does not overwrite a concurrent edit made before atomic rename", async () => {
+    const fixture = await createToolFixture();
+    const target = path.join(fixture.project, "a.txt");
+    await fs.writeFile(target, "before");
+    let changed = false;
+    const result = await executeReplaceInFile(
+      {
+        workspace: fixture.workspace,
+        signal: new AbortController().signal,
+      },
+      { path: "a.txt", oldText: "before", newText: "after" },
+      {
+        ...nativeToolDependencies,
+        fileSystem: {
+          ...nativeToolDependencies.fileSystem,
+          open: async (...arguments_) => {
+            const handle = await nativeToolDependencies.fileSystem.open(...arguments_);
+            if (!changed) {
+              changed = true;
+              await fs.writeFile(target, "concurrent");
+            }
+            return handle;
+          },
+        },
+      },
+    );
+    expect(result.error?.code).toBe("FILE_STALE");
+    await expect(fs.readFile(target, "utf8")).resolves.toBe("concurrent");
   });
 });

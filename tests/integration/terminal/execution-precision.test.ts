@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,8 +30,21 @@ afterEach(async () => {
 const callId = (index: number) =>
   `18000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 
-function sha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+async function allocateLoopbackPort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null
+    ? address.port
+    : 0;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+  });
+  if (port === 0 || port === 3000) throw new Error("未取得非 3000 测试端口");
+  return port;
 }
 
 function assertExecutionPolicy(request: ModelRequest): void {
@@ -39,13 +52,19 @@ function assertExecutionPolicy(request: ModelRequest): void {
     .filter((message) => message.role === "system")
     .map((message) => message.content)
     .join("\n");
-  expect(system).toContain("SEcode 系统策略 v10");
+  expect(system).toContain("SEcode 系统策略 v13");
   expect(system).toContain("ToolResult.ok");
   expect(system).toContain("stderr 只是输出通道");
-  expect(system).toContain("expectedSha256");
+  expect(system).not.toContain("expectedSha256");
+  expect(system).toContain("因目标行为缺失而失败的最小测试");
   expect(system).toContain("3000 是 SEcode 默认保留端口");
-  expect(system).toContain("SERVER_PORT");
-  expect(system).toContain("监听、代理、README、API 检查和 readiness 使用同一端口");
+  expect(system).toContain("最终监听端口不得为 3000");
+  expect(system).toContain("监听、代理、README、API 检查、readiness 和最终链接使用同一个实际端口");
+  expect(system).toContain("最终回答给出启动命令和实际 URL");
+  expect(system).toContain("与风险相称的最小反馈环");
+  expect(system).toContain("PORT 或 SERVER_PORT 的值为 3000");
+  expect(system).toContain("一次需求 smoke");
+  expect(system).toContain("直接 final");
   expect(system).toContain("不解释管道、连接符、重定向、$VAR 或命令替换");
 }
 
@@ -221,7 +240,6 @@ describe("stage 18 deterministic execution precision", () => {
   });
 
   it("fixes only the blocker in mixed failure and stops after green rerun", async () => {
-    const before = "export const blocker = \"broken\";\n";
     const after = "export const blocker = \"fixed\";\n";
     const model = new QueueFakeModel([
       policyStep(toolCompletion("run_process", {
@@ -236,7 +254,6 @@ describe("stage 18 deterministic execution precision", () => {
       policyStep(toolCompletion("write_file", {
         path: "src/blocker.ts",
         content: after,
-        expectedSha256: sha256(before),
       }, callId(13))),
       policyStep(toolCompletion("run_process", {
         program: "npm",
@@ -268,7 +285,6 @@ describe("stage 18 deterministic execution precision", () => {
   });
 
   it("observes parent and target before create, overwrite and batch writes", async () => {
-    const existing = "export const existing = 1;\n";
     const model = new QueueFakeModel([
       policyStep(toolCompletion("list_directory", {
         path: "src",
@@ -298,7 +314,6 @@ describe("stage 18 deterministic execution precision", () => {
       policyStep(toolCompletion("write_file", {
         path: "src/existing.ts",
         content: "export const existing = 2;\n",
-        expectedSha256: sha256(existing),
       }, callId(26))),
       policyStep(toolCompletion("run_process", {
         program: "npm",
@@ -339,8 +354,73 @@ describe("stage 18 deterministic execution precision", () => {
       .resolves.toBe("export const existing = 2;\n");
   });
 
-  it("re-observes after a stale hash instead of bypassing protection", async () => {
-    const original = "export const existing = 1;\n";
+  it("executes one minimal RED then implementation then GREEN and build", async () => {
+    const testFile = `import test from "node:test";
+import assert from "node:assert/strict";
+import { double } from "./feature.mjs";
+test("double returns twice the input", () => assert.equal(double(3), 6));
+`;
+    const packageJson = `${JSON.stringify({
+      private: true,
+      scripts: {
+        test: "node --test feature.test.mjs",
+        build: "node --check feature.mjs",
+      },
+    }, null, 2)}\n`;
+    const model = new QueueFakeModel([
+      policyStep(toolCompletion("list_directory", { path: ".", depth: 1 }, callId(90))),
+      policyStep(multipleToolCompletion([
+        { id: callId(91), name: "write_file", arguments: { path: "package.json", content: packageJson } },
+        { id: callId(92), name: "write_file", arguments: { path: "feature.test.mjs", content: testFile } },
+      ])),
+      policyStep(toolCompletion("run_process", {
+        program: "npm",
+        args: ["test"],
+        cwd: ".",
+      }, callId(93))),
+      policyStep(toolCompletion("write_file", {
+        path: "feature.mjs",
+        content: "export const double = (value) => value * 2;\n",
+      }, callId(94))),
+      policyStep(toolCompletion("run_process", {
+        program: "npm",
+        args: ["test"],
+        cwd: ".",
+      }, callId(95))),
+      policyStep(toolCompletion("run_process", {
+        program: "npm",
+        args: ["run", "build"],
+        cwd: ".",
+      }, callId(96))),
+      policyStep(textCompletion("最小测试先失败，实现后测试与构建均通过。")),
+    ]);
+    const item = await setup(model, { emptyWorkspace: true });
+    item.io.push("用简单 TDD 实现 double");
+    await waitForCompletion(item);
+
+    const events = await item.events();
+    expectPolicyRequests(model);
+    const requested = events.filter(isToolRequestedEvent);
+    const testRequests = requested.filter((event) =>
+      event.data.toolName === "run_process" &&
+      JSON.stringify(event.data.publicArguments.args) === JSON.stringify(["test"])
+    );
+    const productionWrite = requested.findIndex((event) =>
+      event.data.toolName === "write_file" &&
+      event.data.publicArguments.path === "feature.mjs"
+    );
+    expect(testRequests).toHaveLength(2);
+    expect(requested.indexOf(testRequests[0]!)).toBeLessThan(productionWrite);
+    expect(productionWrite).toBeLessThan(requested.indexOf(testRequests[1]!));
+    const testResults = events.filter(isToolResultEvent).filter((event) =>
+      event.data.toolName === "run_process" &&
+      [callId(93), callId(95)].includes(event.data.toolCallId)
+    );
+    expect(testResults.map((event) => event.data.result.ok)).toEqual([false, true]);
+    expect(requested.at(-1)?.data.publicArguments.args).toEqual(["run", "build"]);
+  });
+
+  it("overwrites the execution-time file without a model hash retry", async () => {
     const concurrent = "export const existing = 7;\n";
     const final = "export const existing = 8;\n";
     let workspacePath = "";
@@ -358,28 +438,14 @@ describe("stage 18 deterministic execution precision", () => {
         return toolCompletion("write_file", {
           path: "src/existing.ts",
           content: final,
-          expectedSha256: sha256(original),
         }, callId(33));
       },
-      policyStep(toolCompletion("list_directory", {
-        path: "src",
-        depth: 1,
-      }, callId(34))),
-      policyStep(toolCompletion("read_file", {
-        path: "src/existing.ts",
-        startLine: 1,
-      }, callId(35))),
-      policyStep(toolCompletion("write_file", {
-        path: "src/existing.ts",
-        content: final,
-        expectedSha256: sha256(concurrent),
-      }, callId(36))),
       policyStep(toolCompletion("run_process", {
         program: "npm",
         args: ["test"],
         cwd: ".",
-      }, callId(37))),
-      policyStep(textCompletion("并发变化后已重新观察并安全覆盖。")),
+      }, callId(34))),
+      policyStep(textCompletion("已按执行时目标完成覆盖和验证。")),
     ]);
     const item = await setup(model);
     workspacePath = item.workspace;
@@ -392,24 +458,22 @@ describe("stage 18 deterministic execution precision", () => {
       "list_directory",
       "read_file",
       "write_file",
-      "list_directory",
-      "read_file",
-      "write_file",
       "run_process",
     ]);
-    expect(JSON.stringify(events)).toContain("FILE_STALE");
+    expect(JSON.stringify(events)).not.toContain("FILE_STALE");
     await expect(readFile(path.join(item.workspace, "src/existing.ts"), "utf8"))
       .resolves.toBe(final);
   });
 
-  it("keeps generated server, proxy, documentation and readiness on port 3001 without Shell arguments", async () => {
+  it("keeps generated server, proxy, documentation and readiness on one non-3000 port", async () => {
+    const port = await allocateLoopbackPort();
     const server = `import { createServer } from "node:http";
-const serverPort = Number(process.env.SERVER_PORT || 3001);
+const serverPort = ${port};
 createServer((_request, response) => response.end("ok")).listen(serverPort, "127.0.0.1");
 `;
-    const proxy = `export const apiTarget = "http://127.0.0.1:3001";
+    const proxy = `export const apiTarget = "http://127.0.0.1:${port}";
 `;
-    const readme = "后端默认地址：http://127.0.0.1:3001\n";
+    const readme = `后端默认地址：http://127.0.0.1:${port}\n`;
     const model = new QueueFakeModel([
       policyStep(toolCompletion("list_directory", {
         path: ".",
@@ -442,14 +506,14 @@ createServer((_request, response) => response.end("ok")).listen(serverPort, "127
         cwd: ".",
         timeoutMs: 10_000,
         lifecycle: "service",
-        readiness: { url: "http://127.0.0.1:3001", expectedStatus: 200 },
+        readiness: { url: `http://127.0.0.1:${port}`, expectedStatus: 200 },
       }, callId(46))),
       policyStep(toolCompletion("run_process", {
         program: "npm",
         args: ["test"],
         cwd: ".",
       }, callId(47))),
-      policyStep(textCompletion("服务、代理、文档和就绪探测均使用 3001，验收完成。")),
+      policyStep(textCompletion(`服务、代理、文档和就绪探测均使用 http://127.0.0.1:${port}，验收完成。`)),
     ]);
     const item = await setup(model);
     item.io.push("创建避开 SEcode 3000 端口的本地服务并验收");
@@ -457,7 +521,7 @@ createServer((_request, response) => response.end("ok")).listen(serverPort, "127
       expect((await item.events()).some((event) => event.type === "approval.required"))
         .toBe(true);
     }, { timeout: 10_000 });
-    item.io.push("/approve 仅启动临时工作区内的 3001 测试服务");
+    item.io.push("/approve 仅启动临时工作区内的非 3000 测试服务");
     await waitForCompletion(item);
 
     const events = await item.events();
@@ -480,15 +544,17 @@ createServer((_request, response) => response.end("ok")).listen(serverPort, "127
     expect(processArguments).toEqual(["src/server.mjs", "test"]);
     expect(processArguments).not.toEqual(expect.arrayContaining(["|", "&&", "$PORT", ">", "$()"]));
     await expect(readFile(path.join(item.workspace, "src/server.mjs"), "utf8"))
-      .resolves.toContain("process.env.SERVER_PORT || 3001");
+      .resolves.toContain(`const serverPort = ${port}`);
     await expect(readFile(path.join(item.workspace, "src/proxy.ts"), "utf8"))
-      .resolves.toContain("127.0.0.1:3001");
+      .resolves.toContain(`127.0.0.1:${port}`);
     await expect(readFile(path.join(item.workspace, "README.md"), "utf8"))
-      .resolves.toContain("127.0.0.1:3001");
-    expect(JSON.stringify(events)).toContain("http://127.0.0.1:3001");
+      .resolves.toContain(`127.0.0.1:${port}`);
+    expect(port).not.toBe(3000);
+    expect(JSON.stringify(events)).toContain(`http://127.0.0.1:${port}`);
   });
 
   it("builds an empty-workspace project after Plan approval with ordered directories and port isolation", async () => {
+    const port = await allocateLoopbackPort();
     const packageJson = `${JSON.stringify({
       private: true,
       scripts: {
@@ -497,15 +563,15 @@ createServer((_request, response) => response.end("ok")).listen(serverPort, "127
       },
     }, null, 2)}\n`;
     const server = `import { createServer } from "node:http";
-const serverPort = Number(process.env.SERVER_PORT || 3001);
+const serverPort = ${port};
 createServer((request, response) => {
   response.setHeader("content-type", request.url === "/" ? "text/html; charset=utf-8" : "application/json");
   response.end(request.url === "/" ? "<main>Stage 19 ready</main>" : JSON.stringify({ ok: true, port: serverPort }));
 }).listen(serverPort, "127.0.0.1");
 `;
-    const check = `const api = await fetch("http://127.0.0.1:3001/api/health");
-if (!api.ok || (await api.json()).port !== 3001) process.exit(1);
-const page = await fetch("http://127.0.0.1:3001/");
+    const check = `const api = await fetch("http://127.0.0.1:${port}/api/health");
+if (!api.ok || (await api.json()).port !== ${port}) process.exit(1);
+const page = await fetch("http://127.0.0.1:${port}/");
 if (!page.ok || !(await page.text()).includes("Stage 19 ready")) process.exit(1);
 `;
     const model = new QueueFakeModel([
@@ -520,9 +586,9 @@ if (!page.ok || !(await page.text()).includes("Stage 19 ready")) process.exit(1)
       policyStep(multipleToolCompletion([
         { id: callId(54), name: "write_file", arguments: { path: "package.json", content: packageJson } },
         { id: callId(55), name: "write_file", arguments: { path: "server/server.mjs", content: server } },
-        { id: callId(56), name: "write_file", arguments: { path: "client/proxy.ts", content: "export const apiTarget = \"http://127.0.0.1:3001\";\n" } },
+        { id: callId(56), name: "write_file", arguments: { path: "client/proxy.ts", content: `export const apiTarget = "http://127.0.0.1:${port}";\n` } },
         { id: callId(57), name: "write_file", arguments: { path: "scripts/check.mjs", content: check } },
-        { id: callId(58), name: "write_file", arguments: { path: "README.md", content: "后端：http://127.0.0.1:3001\n" } },
+        { id: callId(58), name: "write_file", arguments: { path: "README.md", content: `后端：http://127.0.0.1:${port}\n` } },
       ])),
       policyStep(toolCompletion("run_process", {
         program: "npm",
@@ -539,17 +605,19 @@ if (!page.ok || !(await page.text()).includes("Stage 19 ready")) process.exit(1)
         args: ["server/server.mjs"],
         cwd: ".",
         lifecycle: "service",
-        readiness: { url: "http://127.0.0.1:3001/api/health", expectedStatus: 200 },
+        readiness: { url: `http://127.0.0.1:${port}/api/health`, expectedStatus: 200 },
       }, callId(61))),
       policyStep(toolCompletion("run_process", {
         program: "npm",
         args: ["test"],
         cwd: ".",
       }, callId(62))),
-      policyStep(textCompletion("目录、安装、构建、3001 readiness、API 与页面检查均已完成。")),
+      policyStep(textCompletion(`目录、安装、构建、readiness、API 与页面检查均已完成。启动命令：node server/server.mjs；访问页面：http://127.0.0.1:${port}/；健康检查：http://127.0.0.1:${port}/api/health`)),
     ]);
     const previousPort = process.env.PORT;
+    const previousServerPort = process.env.SERVER_PORT;
     process.env.PORT = "3000";
+    process.env.SERVER_PORT = "3000";
     try {
       const item = await setup(model, { emptyWorkspace: true });
       item.io.push("/plan on");
@@ -562,6 +630,7 @@ if (!page.ok || !(await page.text()).includes("Stage 19 ready")) process.exit(1)
       await approveRequiredTool(item, 1);
       await approveRequiredTool(item, 2);
       await approveRequiredTool(item, 3);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
       await waitForCompletion(item);
 
       const events = await item.events();
@@ -586,17 +655,20 @@ if (!page.ok || !(await page.text()).includes("Stage 19 ready")) process.exit(1)
           : []);
       expect(processArgs).not.toEqual(expect.arrayContaining(["|", "&&", "$PORT", ">", "$()"]));
       await expect(readFile(path.join(item.workspace, "server/server.mjs"), "utf8"))
-        .resolves.toContain("process.env.SERVER_PORT || 3001");
+        .resolves.toContain(`const serverPort = ${port}`);
       await expect(readFile(path.join(item.workspace, "client/proxy.ts"), "utf8"))
-        .resolves.toContain("127.0.0.1:3001");
+        .resolves.toContain(`127.0.0.1:${port}`);
       await expect(readFile(path.join(item.workspace, "README.md"), "utf8"))
-        .resolves.toContain("127.0.0.1:3001");
-      expect(JSON.stringify(events)).toContain("http://127.0.0.1:3001/api/health");
+        .resolves.toContain(`127.0.0.1:${port}`);
+      expect(port).not.toBe(3000);
+      expect(JSON.stringify(events)).toContain(`http://127.0.0.1:${port}/api/health`);
     } finally {
       if (previousPort === undefined) delete process.env.PORT;
       else process.env.PORT = previousPort;
+      if (previousServerPort === undefined) delete process.env.SERVER_PORT;
+      else process.env.SERVER_PORT = previousServerPort;
     }
-  }, 10_000);
+  }, 30_000);
 
   it("bounds a wrong empty-workspace write batch and recovers in the same run", async () => {
     const initialWrites = Array.from({ length: 6 }, (_, index) => ({

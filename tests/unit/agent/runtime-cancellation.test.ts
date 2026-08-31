@@ -63,6 +63,60 @@ function approvalCompletion() {
 }
 
 describe("Agent cancellation", () => {
+  it("aborts a ready service before committing a failed run", async () => {
+    const fixture = await createAgentFixture();
+    const sessionId = (await fixture.store.listSessions())[0].id;
+    let serviceSignal: AbortSignal | undefined;
+    let abortCount = 0;
+    const runtime = createAgentRuntimeWithDependencies(
+      {
+        eventStore: fixture.store,
+        modelClient: new QueueModelClient([
+          createToolCompletion([{
+            ok: true,
+            call: {
+              id: "25000000-0000-4000-8000-000000000201",
+              name: "run_process",
+              arguments: {
+                program: "node",
+                args: ["server.mjs"],
+                cwd: ".",
+                lifecycle: "service",
+                readiness: { url: "http://127.0.0.1:43131/" },
+              },
+            },
+          }]),
+          new Error("model failed after service readiness"),
+        ]),
+        contextProvider: createStaticContextProvider(),
+      },
+      {
+        ...nativeAgentRuntimeDependencies,
+        randomUUID: () => RUN_ID,
+        executeAuthorizedLocalTool: async (context) => {
+          serviceSignal = context.signal;
+          context.signal.addEventListener("abort", () => { abortCount += 1; });
+          return {
+            ok: true,
+            summary: "服务已就绪",
+            metadata: { ready: true },
+          };
+        },
+      },
+    );
+
+    const outcome = await (await runtime.startRun({
+      sessionId,
+      prompt: "启动后继续处理",
+      permissionMode: "full",
+    })).completion;
+    expect(outcome).toMatchObject({ status: "failed" });
+    expect(serviceSignal?.aborted).toBe(true);
+    expect(abortCount).toBe(1);
+    expect((await fixture.store.readEvents(sessionId)).events.at(-1)?.type)
+      .toBe("run.failed");
+  });
+
   it("cancels an in-flight model request exactly once", async () => {
     const fixture = await createAgentFixture();
     const sessionId = (await fixture.store.listSessions())[0].id;

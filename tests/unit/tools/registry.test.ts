@@ -19,6 +19,15 @@ import {
 afterEach(cleanupAllToolFixtures);
 
 describe("local tool registry", () => {
+  it("向模型说明包管理器透传和 service 同源 readiness", () => {
+    const definition = publicTools.LOCAL_TOOL_DEFINITIONS.find(
+      (item) => item.function.name === "run_process",
+    );
+    expect(definition?.function.description).toContain("通过 -- 透传");
+    expect(definition?.function.description).toContain("显式绑定 127.0.0.1");
+    expect(definition?.function.description).toContain("同一端口");
+  });
+
   it("keeps handlers, adapters, atomic helpers, and path internals private", () => {
     expect(publicTools).not.toHaveProperty("executeReadFile");
     expect(publicTools).not.toHaveProperty("nativeToolDependencies");
@@ -89,15 +98,13 @@ describe("local tool registry", () => {
       },
       read.invocation,
     );
-    const hash = readResult.metadata?.sha256;
-    expect(typeof hash).toBe("string");
+    expect(typeof readResult.metadata?.sha256).toBe("string");
 
     const replace = prepareLocalToolCall(
       toolCall("replace_in_file", {
         path: "a.txt",
         oldText: "before",
         newText: "after",
-        expectedSha256: hash as string,
       }),
     );
     expect(replace.ok).toBe(true);

@@ -79,7 +79,6 @@ export interface SearchTextArguments {
 export interface WriteFileArguments {
   path: string;
   content: string;
-  expectedSha256?: string;
 }
 export interface TextReplacement {
   oldText: string;
@@ -87,7 +86,6 @@ export interface TextReplacement {
 }
 export type ReplaceInFileArguments = {
   path: string;
-  expectedSha256: string;
 } & (
   | TextReplacement
   | { replacements: TextReplacement[] }

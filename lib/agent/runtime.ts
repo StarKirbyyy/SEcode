@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import {
   ApprovalDecisionSchema,
@@ -54,18 +55,29 @@ import {
 } from "./dependencies";
 import { AgentLayerError, createAgentError } from "./errors";
 import {
-  completionEvidenceCorrectionBudgetExceeded,
+  appendVerificationWarning,
+  classifyVerificationCommand,
   createCompletionEvidenceState,
-  getCurrentValidationEvidence,
   getUncoveredCompletionEvidence,
   recordCompletionEvidenceToolResult,
   requestCompletionEvidenceCorrection,
   type CompletionEvidenceState,
 } from "./completion-evidence";
 import {
+  createConvergenceView,
+  fingerprintConvergenceView,
+  renderConvergenceMessage,
+} from "./convergence-view";
+import {
   AgentPlanApprovalWait,
   AgentPlanApprovalWaitAbortedError,
 } from "./plan-approval-wait";
+import {
+  createServiceHandoffState,
+  decideServiceFinal,
+  recordServiceHandoffToolResult,
+  type ServiceHandoffState,
+} from "./service-handoff";
 import { AgentEventPublisher } from "./events";
 import {
   createAgentProjection,
@@ -131,17 +143,6 @@ const ACCEPTED_COMPLETION_EVIDENCE_KINDS = [
   "build",
 ] as const;
 
-function completionEvidenceDetails(state: CompletionEvidenceState): JsonObject {
-  const evidence = getUncoveredCompletionEvidence(state);
-  return {
-    uncoveredScopes: evidence.scopes,
-    uncoveredPaths: evidence.paths,
-    uncoveredPathCount: evidence.totalPaths,
-    uncoveredPathsTruncated: evidence.pathsTruncated,
-    acceptedKinds: [...ACCEPTED_COMPLETION_EVIDENCE_KINDS],
-  };
-}
-
 function completionEvidenceCorrectionMessage(state: CompletionEvidenceState): string {
   const evidence = getUncoveredCompletionEvidence(state);
   const paths = evidence.paths.length === 0 ? "（无可安全展示的具体路径）" : evidence.paths.join("、");
@@ -200,6 +201,9 @@ interface ActiveRunState {
   completionEvidence: CompletionEvidenceState;
   validationRepair: ValidationRepairState;
   writeDependencyRecovery: WriteDependencyRecoveryState;
+  serviceHandoff: ServiceHandoffState;
+  serviceHandoffCorrection?: string;
+  lastDeliveredConvergenceFingerprint?: string;
 }
 
 interface PreparedToolPlan {
@@ -367,6 +371,7 @@ class AgentRuntimeImplementation implements AgentRuntime {
         completionEvidence: createCompletionEvidenceState(),
         validationRepair: createValidationRepairState(),
         writeDependencyRecovery: createWriteDependencyRecoveryState(),
+        serviceHandoff: createServiceHandoffState(),
       };
       activeHolder.current = active;
 
@@ -743,17 +748,6 @@ class AgentRuntimeImplementation implements AgentRuntime {
             { pendingParents: getPendingParentDirectories(active.writeDependencyRecovery) },
           );
         }
-        if (completionEvidenceCorrectionBudgetExceeded(
-          active.completionEvidence,
-          active.modelRequests,
-          active.toolCalls,
-        )) {
-          throw createAgentError(
-            "AGENT_COMPLETION_EVIDENCE_MISSING",
-            "运行未完成：变更后验证未在局部纠正预算内补齐；修改已保留，请补充认可验证后继续",
-            completionEvidenceDetails(active.completionEvidence),
-          );
-        }
         const maxModelRequests = active.limits.maxModelRequests;
         if (
           maxModelRequests !== undefined &&
@@ -824,6 +818,23 @@ class AgentRuntimeImplementation implements AgentRuntime {
         active.modelRequests = nextIteration;
 
         let completion: ModelCompletion;
+        const convergenceView = createConvergenceView(
+          active.completionEvidence,
+          active.serviceHandoff,
+          { closing: active.modelRequests >= 20 },
+        );
+        const convergenceMessage = renderConvergenceMessage(convergenceView);
+        const convergenceFingerprint = convergenceMessage === undefined
+          ? undefined
+          : fingerprintConvergenceView(convergenceView);
+        const convergenceUpdate =
+          convergenceMessage !== undefined &&
+          convergenceFingerprint !== active.lastDeliveredConvergenceFingerprint
+            ? convergenceMessage
+            : undefined;
+        if (convergenceUpdate !== undefined) {
+          active.lastDeliveredConvergenceFingerprint = convergenceFingerprint;
+        }
         const visibleGate = new StreamingVisibleTextGate(async (content) => {
           await active.publisher.publishLive(content, nextIteration);
           this.throwIfAborted(active);
@@ -846,11 +857,17 @@ class AgentRuntimeImplementation implements AgentRuntime {
                     role: "system" as const,
                     content: completionEvidenceCorrectionMessage(active.completionEvidence),
                   }]),
-              ...(getCurrentValidationEvidence(active.completionEvidence).length === 0
+              ...(active.serviceHandoffCorrection === undefined
                 ? []
                 : [{
                     role: "system" as const,
-                    content: `当前 run 仍有效的结构化验证事实（无需无条件重复；后续覆盖范围 mutation 会使对应事实失效）：${getCurrentValidationEvidence(active.completionEvidence).map((item) => `${item.kind}@${item.cwd}#${item.seq}`).join("、")}。`,
+                    content: active.serviceHandoffCorrection,
+                  }]),
+              ...(convergenceUpdate === undefined
+                ? []
+                : [{
+                    role: "system" as const,
+                    content: convergenceUpdate,
                   }]),
               ...(!hasPendingParentDirectories(active.writeDependencyRecovery)
                 ? []
@@ -915,7 +932,7 @@ class AgentRuntimeImplementation implements AgentRuntime {
         });
 
         if (completion.finishReason === "stop") {
-          const content = this.visibleContent(completion.content);
+          let content = this.visibleContent(completion.content);
           this.assertVisibleContentSize(content);
           if (!analyzeAssistantLanguage(content).ok) {
             await this.rejectStopContent(active, nextIteration, content);
@@ -953,34 +970,42 @@ class AgentRuntimeImplementation implements AgentRuntime {
           if (active.completionEvidence.pendingValidation) {
             const correctionAttempt = requestCompletionEvidenceCorrection(
               active.completionEvidence,
-              active.modelRequests,
-              active.toolCalls,
             );
-            if (correctionAttempt === undefined) {
-              throw createAgentError(
-                "AGENT_COMPLETION_EVIDENCE_MISSING",
-                "运行未完成：代码或配置变更后缺少成功的结构化验证；修改已保留，请补充认可验证后继续",
-                completionEvidenceDetails(active.completionEvidence),
-              );
-            }
-            active.continuation = undefined;
             const uncovered = getUncoveredCompletionEvidence(active.completionEvidence);
-            await active.publisher.append({
-              type: "completion.evidence.rejected",
-              runId: active.runId,
-              data: {
-                iteration: nextIteration,
-                missing: ["post_change_verification"],
-                correctionAttempt,
-                uncoveredScopes: uncovered.scopes,
-                uncoveredPaths: uncovered.paths,
-                uncoveredPathCount: uncovered.totalPaths,
-                uncoveredPathsTruncated: uncovered.pathsTruncated,
-                acceptedKinds: [...ACCEPTED_COMPLETION_EVIDENCE_KINDS],
-              },
-            });
+            if (correctionAttempt !== undefined) {
+              active.continuation = undefined;
+              await active.publisher.append({
+                type: "completion.evidence.rejected",
+                runId: active.runId,
+                data: {
+                  iteration: nextIteration,
+                  missing: ["post_change_verification"],
+                  correctionAttempt,
+                  uncoveredScopes: uncovered.scopes,
+                  uncoveredPaths: uncovered.paths,
+                  uncoveredPathCount: uncovered.totalPaths,
+                  uncoveredPathsTruncated: uncovered.pathsTruncated,
+                  acceptedKinds: [...ACCEPTED_COMPLETION_EVIDENCE_KINDS],
+                },
+              });
+              continue;
+            }
+            content = appendVerificationWarning(content, uncovered);
+          }
+          const serviceFinal = decideServiceFinal(
+            active.serviceHandoff,
+            content,
+          );
+          if (serviceFinal.kind === "retry") {
+            active.continuation = undefined;
+            active.serviceHandoffCorrection = serviceFinal.message;
             continue;
           }
+          if (serviceFinal.appendix !== undefined && !content.includes(serviceFinal.appendix)) {
+            content = `${content}\n\n${serviceFinal.appendix}`;
+          }
+          active.serviceHandoffCorrection = undefined;
+          this.assertVisibleContentSize(content);
           return await this.completeTextRun(
             active,
             content,
@@ -1253,10 +1278,42 @@ class AgentRuntimeImplementation implements AgentRuntime {
       active.toolCalls += 1;
     }
     const preflightParents = new Set<string>();
+    const failedValidatorByCwd = new Map<string, string>();
     for (const plan of plans) {
       this.throwIfAborted(active);
       let result: ToolResult;
-      if (plan.directResult !== undefined) {
+      let batchSkipped = false;
+      const validatorCwd = plan.invocation?.name === "run_process" &&
+        (plan.invocation.arguments.lifecycle ?? "oneshot") === "oneshot" &&
+        classifyVerificationCommand(
+          plan.invocation.arguments.program,
+          plan.invocation.arguments.args,
+        ) !== undefined
+        ? path.posix.normalize(plan.invocation.arguments.cwd.replaceAll("\\", "/"))
+        : undefined;
+      const blockedByToolCallId = validatorCwd === undefined
+        ? undefined
+        : failedValidatorByCwd.get(validatorCwd);
+      if (blockedByToolCallId !== undefined) {
+        batchSkipped = true;
+        result = ToolResultSchema.parse({
+          ok: false,
+          summary: "同批后续验证已跳过",
+          metadata: {
+            skipped: true,
+            reason: "prior_validator_failed",
+          },
+          error: {
+            code: "VALIDATION_BATCH_SKIPPED",
+            message: "同一目录的前置验证失败",
+            recoverable: true,
+            details: {
+              cwd: validatorCwd,
+              blockedByToolCallId,
+            },
+          },
+        });
+      } else if (plan.directResult !== undefined) {
         result = plan.directResult;
       } else if (plan.invocation !== undefined) {
         const dependency = evaluateWriteDependency(
@@ -1304,7 +1361,13 @@ class AgentRuntimeImplementation implements AgentRuntime {
           result,
         },
       });
-      if (plan.invocation !== undefined) {
+      if (plan.invocation !== undefined && !batchSkipped) {
+        recordServiceHandoffToolResult(
+          active.serviceHandoff,
+          resultEvent.seq,
+          plan.invocation,
+          result,
+        );
         recordCompletionEvidenceToolResult(
           active.completionEvidence,
           resultEvent.seq,
@@ -1348,8 +1411,17 @@ class AgentRuntimeImplementation implements AgentRuntime {
           }
         }
       }
-      this.updateToolErrorStreak(active, plan, result);
-      this.updateNoProgressReadStreak(active, plan, result);
+      if (!batchSkipped) {
+        this.updateToolErrorStreak(active, plan, result);
+        this.updateNoProgressReadStreak(active, plan, result);
+      }
+      if (
+        !batchSkipped &&
+        validatorCwd !== undefined &&
+        !result.ok
+      ) {
+        failedValidatorByCwd.set(validatorCwd, plan.toolCallId);
+      }
     }
   }
 
@@ -1688,6 +1760,9 @@ class AgentRuntimeImplementation implements AgentRuntime {
         "运行终态已经确定",
       );
     }
+    if (!active.controller.signal.aborted) {
+      active.controller.abort("run_failed");
+    }
     active.finalizing = true;
     await active.publisher.append({
       type: "run.failed",
@@ -1714,6 +1789,9 @@ class AgentRuntimeImplementation implements AgentRuntime {
         "AGENT_INTERNAL_ERROR",
         "运行终态已经确定",
       );
+    }
+    if (!active.controller.signal.aborted) {
+      active.controller.abort("run_cancelled");
     }
     active.finalizing = true;
     await active.publisher.append({

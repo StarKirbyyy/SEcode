@@ -18,18 +18,6 @@ import {
 } from "./types";
 
 function atomicFailure(error: AtomicWriteError, relativePath: string) {
-  if (error.code === "invalid_hash_semantics") {
-    return createToolFailure(
-      "TOOL_ARGUMENTS_INVALID",
-      "expectedSha256 与创建或覆盖语义不一致",
-      true,
-      {
-        toolName: "write_file",
-        relativePath,
-        reason: "invalid_expected_hash_semantics",
-      },
-    );
-  }
   if (error.code === "stale") {
     return createToolFailure(
       "FILE_STALE",
@@ -91,7 +79,6 @@ export async function executeWriteFile(
       context.workspace,
       arguments_.path,
       bytes,
-      arguments_.expectedSha256,
       context.signal,
       dependencies,
     );

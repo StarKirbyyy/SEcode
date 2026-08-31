@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,14 +65,12 @@ describe("run NDJSON route", () => {
 
   it("runs the real read-replace-test tool loop and streams canonical events", async () => {
     const fixture = await createSlugFixture();
-    const originalSha = createHash("sha256").update(fixture.source).digest("hex");
     fixture.model.queue.push(
       toolCompletion("read_file", { path: "src/slug.mjs", startLine: 1 }),
       toolCompletion("replace_in_file", {
         path: "src/slug.mjs",
         oldText: 'return value.toLowerCase().replace(" ", "-");',
         newText: 'return value.trim().toLowerCase().replace(/\\s+/g, "-");',
-        expectedSha256: originalSha,
       }),
       toolCompletion("run_process", { program: "pnpm", args: ["test"], cwd: ".", timeoutMs: 120_000 }),
       textCompletion("修复完成，4 项测试全部通过。"),

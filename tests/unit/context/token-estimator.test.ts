@@ -66,8 +66,8 @@ describe("context token estimation and system prompt", () => {
     expect(memory).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
   });
 
-  it("renders exactly one bounded phase overlay for System Prompt V10", () => {
-    expect(SYSTEM_PROMPT_VERSION).toBe(10);
+  it("renders exactly one bounded phase overlay for System Prompt V13", () => {
+    expect(SYSTEM_PROMPT_VERSION).toBe(13);
     const normal = renderSystemPolicy("normal");
     const planning = renderSystemPolicy("planning");
     const executing = renderSystemPolicy("executing");
@@ -75,13 +75,18 @@ describe("context token estimation and system prompt", () => {
     expect(normal).not.toContain("当前阶段：规划");
     expect(planning).toContain("list_directory、read_file 和 search_text");
     expect(planning).toContain("等待用户明确批准");
+    expect(planning).toContain("与风险相称的最小反馈环");
     expect(executing).toContain("计划批准不代表预先批准危险工具");
+    expect(executing).toContain("尽快建立最小可执行反馈环");
     expect(executing).toContain("最相关的可用验证");
     for (const prompt of [normal, planning, executing]) {
       expect(estimateTextTokens(prompt)).toBeLessThan(1_700);
       expect(prompt).not.toContain("/tmp/project");
       expect(prompt).toContain("ToolResult.ok");
-      expect(prompt).toContain("expectedSha256");
+      expect(prompt).not.toContain("expectedSha256");
+      expect(prompt).toContain("因目标行为缺失而失败的最小测试");
+      expect(prompt).toContain("最终监听端口不得为 3000");
+      expect(prompt).toContain("最终回答给出启动命令和实际 URL");
       expect(prompt.match(/3000 是 SEcode 默认保留端口/gu)).toHaveLength(1);
       expect(prompt.match(/不解释管道、连接符、重定向、\$VAR 或命令替换/gu)).toHaveLength(1);
     }

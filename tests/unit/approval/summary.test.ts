@@ -34,7 +34,6 @@ describe("approval tool summaries", () => {
         path: "src/a.ts",
         oldText: "old",
         newText: "new",
-        expectedSha256: "0".repeat(64),
       }),
       prepared("run_process", { program: "pnpm", args: ["test"] }),
     ];
@@ -56,7 +55,6 @@ describe("approval tool summaries", () => {
         path: "src/a.ts",
         oldText: secret,
         newText: `${secret}-new`,
-        expectedSha256: "a".repeat(64),
       }),
     );
     expect(write).not.toContain(secret);
@@ -67,7 +65,6 @@ describe("approval tool summaries", () => {
     const secret = "batch-secret-that-must-not-appear";
     const summary = createToolSummary(prepared("replace_in_file", {
       path: "README.md",
-      expectedSha256: "b".repeat(64),
       replacements: [
         { oldText: secret, newText: "first" },
         { oldText: "second", newText: `${secret}-new` },

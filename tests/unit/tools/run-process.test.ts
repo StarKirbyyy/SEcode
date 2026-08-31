@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_TOOL_OUTPUT_BYTES, utf8ByteLength } from "@/lib/domain";
 import { LocalToolExecutionAbortedError } from "@/lib/tools";
 import { executeRunProcess } from "@/lib/tools/run-process";
+import { nativeToolDependencies } from "@/lib/tools/dependencies";
 
 import {
   cleanupAllToolFixtures,
@@ -59,6 +61,65 @@ async function waitForPidFile(targetPath: string): Promise<number> {
 }
 
 describe("run_process", () => {
+  it("uses the native HTTP probe instead of global fetch", async () => {
+    const server = createHttpServer((_request, response) => response.writeHead(200).end("ok"));
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("stale fetch sentinel"); };
+    try {
+      await expect(nativeToolDependencies.probeHttp(
+        `http://127.0.0.1:${port}/health`,
+        new AbortController().signal,
+      )).resolves.toEqual({ connected: true, status: 200 });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("returns bounded native probe status and transport categories", async () => {
+    const server = createHttpServer((request, response) => {
+      if (request.url === "/reset") {
+        request.socket.destroy();
+        return;
+      }
+      response.writeHead(404).end("not found");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    await expect(nativeToolDependencies.probeHttp(
+      `http://127.0.0.1:${port}/missing`,
+      new AbortController().signal,
+    )).resolves.toEqual({ connected: true, status: 404 });
+    await expect(nativeToolDependencies.probeHttp(
+      `http://127.0.0.1:${port}/reset`,
+      new AbortController().signal,
+    )).resolves.toEqual({ connected: false, errorCategory: "connection_reset" });
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+    const unusedPort = await unusedLoopbackPort();
+    await expect(nativeToolDependencies.probeHttp(
+      `http://127.0.0.1:${unusedPort}/`,
+      new AbortController().signal,
+    )).resolves.toEqual({ connected: false, errorCategory: "connection_refused" });
+
+    const controller = new AbortController();
+    controller.abort("test timeout");
+    await expect(nativeToolDependencies.probeHttp(
+      `http://127.0.0.1:${unusedPort}/`,
+      controller.signal,
+    )).resolves.toEqual({ connected: false, errorCategory: "request_timeout" });
+  });
+
   it("passes shell metacharacters as ordinary argv", async () => {
     const fixture = await createToolFixture();
     const argument = "value; $(not-executed) | >";
@@ -193,6 +254,8 @@ describe("run_process", () => {
         ready: true,
         readinessUrl: `http://127.0.0.1:${port}/health`,
         readinessStatus: 204,
+        readinessProbeAttempts: expect.any(Number),
+        readinessConnected: true,
         timedOut: false,
       },
     });
@@ -328,7 +391,13 @@ describe("run_process", () => {
     expect(result).toMatchObject({
       ok: false,
       error: { code: "PROCESS_TIMEOUT" },
-      metadata: { ready: false, readinessStatus: 302, timedOut: true },
+      metadata: {
+        ready: false,
+        readinessStatus: 302,
+        readinessProbeAttempts: expect.any(Number),
+        readinessConnected: true,
+        timedOut: true,
+      },
     });
     await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toBeDefined();
   });

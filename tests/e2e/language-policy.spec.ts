@@ -62,6 +62,10 @@ test("英文工具说明只被抑制一次，工具卡片与调用都不重复",
   await expect(page.getByText(ENGLISH_TOOL_NARRATIVE, { exact: true })).toHaveCount(0);
 
   const sessionId = new URL(page.url()).pathname.split("/").at(-1)!;
+  await expect.poll(async () => {
+    const body = await (await page.request.get(`/api/sessions/${sessionId}/events?after=0`)).json() as { events?: unknown };
+    return Array.isArray(body.events);
+  }, { timeout: 10_000 }).toBe(true);
   const history = await (await page.request.get(`/api/sessions/${sessionId}/events?after=0`)).json() as {
     events: Array<{ type: string; data: { action?: string; toolName?: string } }>;
   };

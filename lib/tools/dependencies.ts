@@ -3,6 +3,19 @@ import { randomUUID } from "node:crypto";
 import type { Dirent, Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import * as fs from "node:fs/promises";
+import { request } from "node:http";
+
+export type HttpProbeErrorCategory =
+  | "connection_refused"
+  | "connection_reset"
+  | "request_timeout"
+  | "other";
+
+export interface HttpProbeResult {
+  connected: boolean;
+  status?: number;
+  errorCategory?: HttpProbeErrorCategory;
+}
 
 export interface ToolFileSystem {
   readdir(path: string): Promise<Dirent[]>;
@@ -22,7 +35,7 @@ export interface ToolDependencies {
   ): ChildProcess;
   randomUUID(): string;
   now(): number;
-  probeHttp(url: string, signal: AbortSignal): Promise<number>;
+  probeHttp(url: string, signal: AbortSignal): Promise<HttpProbeResult>;
   signalProcess(pid: number, signal: NodeJS.Signals): void;
 }
 
@@ -38,15 +51,28 @@ export const nativeToolDependencies: ToolDependencies = {
   spawnProcess: (program, args, options) => spawn(program, args, options),
   randomUUID,
   now: Date.now,
-  probeHttp: async (url, signal) => {
-    const response = await fetch(url, {
+  probeHttp: (url, signal) => new Promise((resolve) => {
+    const probe = request(url, {
       method: "GET",
-      redirect: "manual",
-      credentials: "omit",
+      agent: false,
       signal,
+    }, (response) => {
+      const status = response.statusCode;
+      response.resume();
+      resolve({
+        connected: true,
+        ...(status === undefined ? {} : { status }),
+      });
     });
-    await response.body?.cancel().catch(() => undefined);
-    return response.status;
-  },
+    probe.once("error", (error: NodeJS.ErrnoException) => {
+      const errorCategory: HttpProbeErrorCategory =
+        error.code === "ECONNREFUSED" ? "connection_refused"
+          : error.code === "ECONNRESET" ? "connection_reset"
+            : error.name === "AbortError" || signal.aborted ? "request_timeout"
+              : "other";
+      resolve({ connected: false, errorCategory });
+    });
+    probe.end();
+  }),
   signalProcess: (pid, signal) => process.kill(pid, signal),
 };

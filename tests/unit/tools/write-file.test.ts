@@ -3,8 +3,6 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sha256Bytes } from "@/lib/tools/file-content";
-
 import {
   cleanupAllToolFixtures,
   createToolFixture,
@@ -30,27 +28,15 @@ describe("write_file", () => {
     );
   });
 
-  it("requires and validates the current hash for overwrite", async () => {
+  it("overwrites an existing text file without a model-provided hash", async () => {
     const fixture = await createToolFixture();
     const target = path.join(fixture.project, "a.txt");
     await fs.writeFile(target, "before");
-    const missing = await runTool(fixture.workspace, "write_file", {
+    const result = await runTool(fixture.workspace, "write_file", {
       path: "a.txt",
       content: "after",
     });
-    expect(missing.error?.code).toBe("TOOL_ARGUMENTS_INVALID");
-    const stale = await runTool(fixture.workspace, "write_file", {
-      path: "a.txt",
-      content: "after",
-      expectedSha256: "0".repeat(64),
-    });
-    expect(stale.error?.code).toBe("FILE_STALE");
-    const success = await runTool(fixture.workspace, "write_file", {
-      path: "a.txt",
-      content: "after",
-      expectedSha256: sha256Bytes(Buffer.from("before")),
-    });
-    expect(success.ok).toBe(true);
+    expect(result.ok).toBe(true);
     await expect(fs.readFile(target, "utf8")).resolves.toBe("after");
   });
 

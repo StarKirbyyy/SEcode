@@ -44,9 +44,6 @@ const utf8Limited = (maxBytes: number, allowEmpty = false) =>
     );
 
 const WorkspacePathInputSchema = utf8Limited(4_096);
-const Sha256Schema = z
-  .string()
-  .regex(/^[0-9a-f]{64}$/, "必须是 64 位小写十六进制 SHA-256");
 
 const ReadinessUrlSchema = z.string().superRefine((value, context) => {
   if (/[\u0000-\u0020\u007f]/.test(value)) {
@@ -114,7 +111,7 @@ export const ListDirectoryArgumentsSchema = z.strictObject({
 
 export const ReadFileArgumentsSchema = z
   .strictObject({
-    path: WorkspacePathInputSchema.describe("要读取的已存在 UTF-8 文本文件的工作区相对路径；覆盖目标时用它取得完整 SHA，不用于探测预期不存在的新文件。"),
+    path: WorkspacePathInputSchema.describe("要读取的已存在 UTF-8 文本文件的工作区相对路径；结果可包含审计用 SHA，但写工具不需要模型传递该值。"),
     startLine: z
       .int()
       .positive()
@@ -157,11 +154,8 @@ export const SearchTextArgumentsSchema = z.strictObject({
 });
 
 export const WriteFileArgumentsSchema = z.strictObject({
-  path: WorkspacePathInputSchema.describe("要创建或覆盖的 UTF-8 文件的工作区相对路径；调用前必须确认父目录已存在和目标是否存在。"),
+  path: WorkspacePathInputSchema.describe("要创建或覆盖的 UTF-8 文件的工作区相对路径；父目录必须已存在。"),
   content: utf8Limited(MAX_WRITE_CONTENT_BYTES, true).describe("要写入的完整 UTF-8 文件内容，可以为空字符串。"),
-  expectedSha256: Sha256Schema
-    .describe("目标存在时必须提供最近一次 read_file 返回的完整文件 SHA-256；确认目标不存在并创建新文件时必须省略。")
-    .optional(),
 });
 
 const TextReplacementSchema = z.strictObject({
@@ -172,7 +166,6 @@ const TextReplacementSchema = z.strictObject({
 export const ReplaceInFileArgumentsSchema = z
   .strictObject({
     path: WorkspacePathInputSchema.describe("要修改的 UTF-8 文件的工作区相对路径。"),
-    expectedSha256: Sha256Schema.describe("此前 read_file 返回的完整文件 SHA-256，用于防止陈旧写入。"),
     oldText: TextReplacementSchema.shape.oldText.optional(),
     newText: TextReplacementSchema.shape.newText.optional(),
     replacements: z.array(TextReplacementSchema).min(1).max(16)
@@ -230,7 +223,7 @@ export const RunProcessArgumentsSchema = z
       .describe("进程生命周期；oneshot 等待退出，service 在 readiness 成功后保持运行。")
       .optional(),
     readiness: RunProcessReadinessSchema
-      .describe("可选的本机 HTTP 就绪探测；成功后仍会停止并清理子进程。")
+      .describe("可选的本机 HTTP 就绪探测；oneshot 就绪后停止并清理，service 就绪后保持运行直到所属 run 失败或取消。")
       .optional(),
   })
   .superRefine((value, context) => {
@@ -274,15 +267,15 @@ const descriptions: Record<LocalToolName, string> = {
   list_directory:
     "列出工作区相对目录中的条目，并限制递归深度和返回数量；可在写入前确认父目录和目标条目，但须注意 depth/limit 与被安全边界阻止的条目。",
   read_file:
-    "分页读取工作区内已存在 UTF-8 文本文件的连续行，并返回完整文件的 SHA-256；目标存在且需要覆盖时可取得最新哈希，不用于探测预期不存在的新文件；每页最多 200 行，hasMore 为 true 时使用 nextStartLine 继续。",
+    "分页读取工作区内已存在 UTF-8 文本文件的连续行，并返回审计用的完整文件 SHA-256；写工具不要求模型传递该值；每页最多 200 行，hasMore 为 true 时使用 nextStartLine 继续。",
   search_text:
     "在工作区内受限的 UTF-8 文本文件中搜索固定字符串，不使用正则表达式，并限制返回数量。",
   write_file:
-    "创建或原子覆盖工作区内的 UTF-8 文件；调用前先确认父目录和目标是否存在，父目录必须已存在；目标存在时必须提供最新 expectedSha256，目标不存在时必须省略。",
+    "创建或原子覆盖工作区内的 UTF-8 文件；父目录必须已存在，工具在执行时验证目标和工作区边界。",
   replace_in_file:
-    "使用 expectedSha256 在工作区文件中原子替换一处文本，或通过 replacements 一次替换同一原始文件中的 1～16 处文本；所有原文本必须在原始快照中唯一且互不重叠，任一失败则整批零写入。",
+    "在工作区文件中原子替换一处文本，或通过 replacements 一次替换同一原始文件中的 1～16 处文本；所有原文本必须在执行快照中唯一且互不重叠，任一失败则整批零写入。",
   run_process:
-    "在工作区相对目录中直接启动程序；以结构化结果 ok/error/exitCode/readiness 判断成败，stdout/stderr 只是原始输出通道，stderr 不自动等于失败；不启用 Shell，不提供自定义环境变量或标准输入，|、&&、重定向、$VAR、$() 只会作为普通参数而不会被解释。service 生命周期须使用受限 loopback HTTP readiness，成功后保持服务运行；oneshot 才在成功后清理进程。",
+    "在工作区相对目录中直接启动程序；包管理器脚本参数必须通过 -- 透传。以结构化结果 ok/error/exitCode/readiness 判断成败，stdout/stderr 只是原始输出通道，stderr 不自动等于失败；不启用 Shell，不提供自定义环境变量或标准输入，|、&&、重定向、$VAR、$() 只会作为普通参数而不会被解释。service 生命周期须显式绑定 127.0.0.1，并使用受限 loopback HTTP readiness；监听、启动参数与 readiness 使用同一端口。轻量服务优先使用 10～15 秒 readiness，仅在命令或配置有实际变化后重试。成功后保持服务运行；oneshot 才在成功后清理进程。",
 };
 
 function modelParameters(schema: z.ZodType): JsonObject {
@@ -396,16 +389,12 @@ export function parseLocalToolArguments(
       return {
         path: normalizeWorkspaceRelativePath(parsed.path),
         content: parsed.content,
-        ...(parsed.expectedSha256 === undefined
-          ? {}
-          : { expectedSha256: parsed.expectedSha256 }),
       };
     }
     case "replace_in_file": {
       const parsed = ReplaceInFileArgumentsSchema.parse(value);
       return {
         path: normalizeWorkspaceRelativePath(parsed.path),
-        expectedSha256: parsed.expectedSha256,
         ...(parsed.replacements !== undefined
           ? { replacements: parsed.replacements.map((item) => ({ ...item })) }
           : { oldText: parsed.oldText!, newText: parsed.newText! }),

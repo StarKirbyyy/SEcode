@@ -44,8 +44,8 @@ describe("local tool schemas", () => {
       list_directory: ["path", "depth", "limit"],
       read_file: ["path", "startLine", "endLine"],
       search_text: ["query", "path", "caseSensitive", "limit"],
-      write_file: ["path", "content", "expectedSha256"],
-      replace_in_file: ["path", "expectedSha256", "oldText", "newText", "replacements"],
+      write_file: ["path", "content"],
+      replace_in_file: ["path", "oldText", "newText", "replacements"],
       run_process: ["program", "args", "cwd", "timeoutMs", "lifecycle", "readiness"],
     };
     for (const definition of LOCAL_TOOL_DEFINITIONS) {
@@ -84,10 +84,28 @@ describe("local tool schemas", () => {
     )?.function.parameters.properties as Record<string, { description?: string }>;
     expect(runProcessProperties.args?.description).toContain("普通参数");
     expect(runProcessProperties.args?.description).toContain("Shell");
+    expect(runProcessProperties.readiness?.description).toContain("oneshot");
+    expect(runProcessProperties.readiness?.description).toContain("service");
+    expect(runProcessProperties.readiness?.description).not.toContain("成功后仍会停止");
     expect(description("list_directory")).toContain("写入前");
-    expect(description("read_file")).toContain("目标存在");
+    expect(description("read_file")).toContain("审计");
+    expect(description("read_file")).toContain("不要求模型传递");
     expect(description("write_file")).toContain("父目录");
-    expect(description("write_file")).toContain("expectedSha256");
+    expect(description("write_file")).not.toContain("expectedSha256");
+  });
+
+  it("rejects model-provided hashes for write tools", () => {
+    expect(prepareLocalToolCall(toolCall("write_file", {
+      path: "a.txt",
+      content: "after",
+      expectedSha256: "0".repeat(64),
+    })).ok).toBe(false);
+    expect(prepareLocalToolCall(toolCall("replace_in_file", {
+      path: "a.txt",
+      oldText: "before",
+      newText: "after",
+      expectedSha256: "0".repeat(64),
+    })).ok).toBe(false);
   });
 
   it("applies defaults and normalizes workspace paths", () => {
@@ -144,7 +162,7 @@ describe("local tool schemas", () => {
   it.each([
     ["read_file", { path: "a", startLine: 3, endLine: 2 }],
     ["write_file", { path: "a", content: "x", extra: true }],
-    ["replace_in_file", { path: "a", oldText: "x", newText: "x", expectedSha256: "0".repeat(64) }],
+    ["replace_in_file", { path: "a", oldText: "x", newText: "x" }],
     ["run_process", { program: "node", args: Array.from({ length: 129 }, () => "x") }],
   ])("rejects invalid %s arguments", (name, arguments_) => {
     const prepared = prepareLocalToolCall(toolCall(name, arguments_));
@@ -155,7 +173,7 @@ describe("local tool schemas", () => {
   });
 
   it("rejects mixed, empty, and oversized replacement batches", () => {
-    const base = { path: "a", expectedSha256: "0".repeat(64) };
+    const base = { path: "a" };
     for (const arguments_ of [
       { ...base, oldText: "a", newText: "b", replacements: [{ oldText: "c", newText: "d" }] },
       { ...base, replacements: [] },

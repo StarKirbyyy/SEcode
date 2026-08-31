@@ -61,18 +61,6 @@ export async function executeReplaceInFile(
     }
     throw cause;
   }
-  if (content.sha256 !== arguments_.expectedSha256) {
-    return createToolFailure(
-      "FILE_STALE",
-      "文件内容已发生变化",
-      true,
-      {
-        toolName: "replace_in_file",
-        relativePath: arguments_.path,
-        reason: "sha256_mismatch",
-      },
-    );
-  }
   const replacements = "replacements" in arguments_
     ? arguments_.replacements
     : [{ oldText: arguments_.oldText, newText: arguments_.newText }];
@@ -155,9 +143,9 @@ export async function executeReplaceInFile(
       context.workspace,
       arguments_.path,
       Buffer.from(nextText, "utf8"),
-      arguments_.expectedSha256,
       context.signal,
       dependencies,
+      { expectedCurrentSha256: content.sha256 },
     );
     return createToolSuccess("文件替换完成", undefined, {
       relativePath: arguments_.path,

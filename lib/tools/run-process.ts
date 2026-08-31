@@ -5,6 +5,7 @@ import { listenForAbort, throwIfAborted } from "./abort";
 import {
   nativeToolDependencies,
   type ToolDependencies,
+  type HttpProbeErrorCategory,
 } from "./dependencies";
 import { BoundedTextAccumulator } from "./output";
 import {
@@ -79,6 +80,9 @@ export async function executeRunProcess(
     let settled = false;
     let mode: CompletionMode = "running";
     let readinessStatus: number | undefined;
+    let readinessProbeAttempts = 0;
+    let readinessConnected = false;
+    let readinessErrorCategory: HttpProbeErrorCategory | undefined;
     let escalationTimer: ReturnType<typeof setTimeout> | undefined;
     let probeTimer: ReturnType<typeof setTimeout> | undefined;
     let serviceAbortCleanup: (() => void) | undefined;
@@ -153,9 +157,14 @@ export async function executeRunProcess(
                 readinessUrl: arguments_.readiness.url,
                 expectedStatus: arguments_.readiness.expectedStatus,
                 readinessTimeoutMs,
+                readinessProbeAttempts,
+                readinessConnected,
                 ...(readinessStatus === undefined
                   ? {}
                   : { readinessStatus }),
+                ...(readinessErrorCategory === undefined
+                  ? {}
+                  : { readinessErrorCategory }),
               }),
         },
       };
@@ -167,13 +176,16 @@ export async function executeRunProcess(
       probeTimer = setTimeout(async () => {
         if (settled || mode !== "running") return;
         try {
-          const status = await dependencies.probeHttp(
+          readinessProbeAttempts += 1;
+          const probe = await dependencies.probeHttp(
             readiness.url,
             probeController.signal,
           );
           if (settled || mode !== "running") return;
-          readinessStatus = status;
-          if (status === readiness.expectedStatus) {
+          readinessConnected ||= probe.connected;
+          readinessStatus = probe.status;
+          readinessErrorCategory = probe.errorCategory;
+          if (probe.status === readiness.expectedStatus) {
             mode = "ready";
             probeController.abort("ready");
             if (lifecycle === "service") {

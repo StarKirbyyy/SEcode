@@ -16,8 +16,8 @@ import {
 } from "./helpers";
 
 describe("模型可见固定自然语言", () => {
-  it("使用中文 System Prompt V10、唯一阶段策略和固定输出策略", () => {
-    expect(SYSTEM_PROMPT_VERSION).toBe(10);
+  it("使用中文 System Prompt V13、唯一阶段策略和固定输出策略", () => {
+    expect(SYSTEM_PROMPT_VERSION).toBe(13);
     const normal = renderSystemPolicy("normal");
     const planning = renderSystemPolicy("planning");
     const executing = renderSystemPolicy("executing");
@@ -25,8 +25,11 @@ describe("模型可见固定自然语言", () => {
     expect(normal).toContain("当前阶段：正常执行");
     expect(normal).toContain("固定使用简体中文");
     expect(planning).toContain("当前阶段：规划");
+    expect(planning).toContain("与风险相称的最小反馈环");
     expect(planning).toContain("等待用户明确批准");
     expect(executing).toContain("当前阶段：已批准执行");
+    expect(executing).toContain("尽快建立最小可执行反馈环");
+    expect(executing).toContain("空项目允许成组创建最小 package、实现、简单测试入口和父目录脚手架");
     expect(executing).toContain("计划批准不代表预先批准危险工具");
     for (const policy of [normal, planning, executing]) {
       expect(policy).not.toMatch(/Current phase|You are SEcode|untrusted data/);
@@ -39,26 +42,36 @@ describe("模型可见固定自然语言", () => {
       expect(policy).toContain("可验证证据");
       expect(policy).toContain("无依赖");
       expect(policy).toContain("Schema");
-      expect(policy).toContain("最新完整 SHA");
+      expect(policy).not.toContain("最新完整 SHA");
       expect(policy).toContain("信任边界");
       expect(policy).toContain("HttpOnly");
-      expect(policy).toContain("就绪探测");
       expect(policy).toContain("孤儿进程");
       expect(policy).toContain("弱化断言");
-      expect(policy).toContain("后续运行");
       expect(policy).toContain("ToolResult.ok");
       expect(policy).toContain("stderr 只是输出通道");
       expect(policy).toContain("不单独代表失败");
       expect(policy).toContain("只修复直接原因");
       expect(policy).toContain("list_directory");
-      expect(policy).toContain("目标存在");
-      expect(policy).toContain("expectedSha256");
+      expect(policy).not.toContain("expectedSha256");
       expect(policy).toContain("新鲜事实");
+      expect(policy).toContain("功能或缺陷优先用一个因目标行为缺失而失败的最小测试");
+      expect(policy).toContain("再做最少实现并重跑");
+      expect(policy).toContain("文档、样式和纯配置使用适当验证");
       expect(policy).toContain("3000 是 SEcode 默认保留端口");
-      expect(policy).toContain("长期服务选择非 3000 端口");
-      expect(policy).toContain("SERVER_PORT");
-      expect(policy).toContain("不以通用 PORT 作为唯一配置");
-      expect(policy).toContain("监听、代理、README、API 检查和 readiness 使用同一端口");
+      expect(policy).toContain("生成项目的最终监听端口不得为 3000");
+      expect(policy).not.toContain("Node.js 用 SERVER_PORT");
+      expect(policy).toContain("监听、代理、README、API 检查、readiness 和最终链接使用同一个实际端口");
+      expect(policy).toContain("轻量服务 readiness 优先等待 10～15 秒");
+      expect(policy).toContain("不为凑齐 lint/typecheck/test/build 四类重复执行");
+      expect(policy).toContain("成功后保持运行");
+      expect(policy).toContain("最终回答给出启动命令和实际 URL");
+      expect(policy).toContain("纯 JS/WASM");
+      expect(policy).toContain("原生 addon");
+      expect(policy).toContain("独立 validator");
+      expect(policy).toContain("typecheck/test/build");
+      expect(policy).toContain("PORT 或 SERVER_PORT 的值为 3000");
+      expect(policy).toContain("一次需求 smoke");
+      expect(policy).toContain("直接 final");
       expect(policy).toContain("管道、连接符、重定向、$VAR 或命令替换");
       expect(policy).toContain("公开 content");
       expect(policy).toContain("HTTP 200");

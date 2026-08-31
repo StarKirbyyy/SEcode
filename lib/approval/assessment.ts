@@ -11,7 +11,7 @@ import {
 
 const REASONS: Readonly<Record<RiskReasonCode, string>> = Object.freeze({
   TOOL_READ_ONLY: "该工具只在工作区边界内执行有限读取",
-  TOOL_WORKSPACE_WRITE: "该工具在工作区内执行受哈希与原子更新保护的修改",
+  TOOL_WORKSPACE_WRITE: "该工具在工作区内执行受路径边界与原子更新保护的修改",
   PROCESS_VERIFICATION: "该进程是精确匹配的项目构建、检查或测试脚本",
   PROCESS_GIT_READ_ONLY: "该进程是精确匹配的 Git 只读查询",
   PROCESS_DEPENDENCY_CHANGE: "该进程可能安装、删除或更新依赖并执行生命周期脚本",

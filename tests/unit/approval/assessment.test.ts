@@ -45,7 +45,6 @@ describe("local tool risk assessment", () => {
         path: "a.ts",
         oldText: secret,
         newText: `${secret}-new`,
-        expectedSha256: "0".repeat(64),
       }),
     );
     for (const assessment of [write, replace]) {
@@ -55,6 +54,8 @@ describe("local tool risk assessment", () => {
         reasonCode: "TOOL_WORKSPACE_WRITE",
       });
       expect(assessment.toolSummary).not.toContain(secret);
+      expect(assessment.reason).toContain("原子");
+      expect(assessment.reason).not.toContain("哈希");
     }
   });
 
