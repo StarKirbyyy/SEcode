@@ -204,11 +204,12 @@ Summary 提交用户审批前必须满足：
 | 24 | Agent Harness 收敛效率、完成证据精确纠正与可解释失败终态 | Spec / Task / Summary |
 | 25 | Agent 简化写入、基础 TDD、端口启动与可访问交付 | Spec / Task / Summary |
 | 26 | Agent 测试、验收与启动收敛效率 | Spec / Task / Summary |
-| 27 | 文档、视频与最终提交 | Spec / Task / Summary |
+| 27 | 项目 README 与运行说明 | Spec / Task / Summary |
+| 28 | README.txt、视频核验、ZIP 与最终提交 | Spec / Task / Summary |
 
 ## 9. 最终完成定义
 
-阶段 01–26 按各自真实状态完成或获得用户明确处置，且终端完整任务、lint、类型检查、单元测试、集成测试、UI 端到端测试和生产构建全部通过后，项目才可标记完成。
+阶段 01–28 按各自真实状态完成或获得用户明确处置，且终端完整任务、lint、类型检查、单元测试、集成测试、UI 端到端测试、生产构建和最终交付核验全部通过后，项目才可标记完成。
 
 ## 10. 本次修订状态
 
@@ -243,3 +244,7 @@ Summary 提交用户审批前必须满足：
 - 阶段 26 修订 2 实施完成：T26R2-00～T26R2-07 已完成并通过 1034 项 unit/integration、coverage、51 项 E2E、双 build、diff check 和 agent-browser；Summary 修订 2 已生成并停在用户审批门。T26R2-08、真实 provider、Git 写入、发布和部署仍未授权。
 - 阶段 26 Summary 修订 2 审批：用户于 2026-08-31 明确回复“批准阶段26”，阶段 26 正式完成并解锁阶段 27 只读观察与 Spec 编写。T26R2-08 未执行且不追认为通过；真实 provider、真实凭据、Git 写入、发布和部署仍需独立授权。
 - 阶段 27 Spec 审批：用户于 2026-08-31 明确回复“批准”，阶段 27 README Spec 获批，只解锁 Task 编写；根 `README.md`、README.txt、视频、ZIP、真实 provider、Git 写入、发布和部署尚未授权。
+- 阶段 27 Summary 审批与阶段 28 立项：用户于 2026-08-31 明确批准阶段 27 Summary，并说明演示视频已经录制完成、要求进入交付阶段。阶段 27 正式完成；阶段 28 承接 README.txt、用户提供视频的核验、ZIP、最终质量和发布门禁，当前只解锁阶段 28 只读观察与 Spec 编写。
+- 阶段 28 Spec 审批：用户于 2026-08-31 明确回复“批准，我需要一份README.txt”，阶段 28 Spec 获批，只解锁 Task 编写；README.txt、视频读取/复制、ZIP、全量门禁、Git 写入和表单提交仍未授权。
+- 阶段 28 范围回退：用户在原 Task 审批回复中明确“只需要提供 README.txt”，并说明视频与 ZIP 由用户自行处理。该要求改变阶段范围和验收标准，因此原 Task 未获有效实施授权，阶段回退到 Spec 修订 1 待审批；README.txt 尚未创建。
+- 阶段 28 Spec 修订 1 审批：用户于 2026-08-31 明确回复“批准”，精简为仅交付 README.txt 的 Spec 修订 1 获批，只解锁 Task 修订 1 编写；README.txt、视频、ZIP、Git 写入和表单提交仍未授权。

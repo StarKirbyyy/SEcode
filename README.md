@@ -207,6 +207,5 @@ pnpm build
 - [开发阶段索引](docs/development/README.md)
 - [阶段 26 收敛效率 Spec](docs/development/26-agent-convergence-efficiency-spec.md)
 - [阶段 26 实施 Summary](docs/development/26-agent-convergence-efficiency-summary.md)
-- [原始考核题目](docs/推免考核题目学生版.pdf)
 
 SEcode 的开发历史保留了各阶段的 Spec、Task、Summary、失败记录和人工门禁。历史失败不会因后续修复而被追溯改写为成功。

@@ -33,7 +33,8 @@
 | 24 | Agent Harness 收敛效率、完成证据精确纠正与可解释失败终态 | Summary 已批准，阶段完成；T24-10 可选真实模型回归未执行且不追认为通过 | [Spec 修订 1（已批准）](./24-completion-evidence-terminal-closure-spec.md) / [Task（已批准，实施完成）](./24-completion-evidence-terminal-closure-tasks.md) / [Summary（已批准）](./24-completion-evidence-terminal-closure-summary.md) |
 | 25 | Agent 简化写入、基础 TDD、端口启动与可访问交付 | v2 自动实施完成但最新真实 run 失败；不生成成功 Summary，修复转入阶段 26 | [Spec（v2 已实施；未审 v3 草案被阶段 26 取代）](./25-agent-tdd-startup-handoff-spec.md) / [Task v2（保留实施记录）](./25-agent-tdd-startup-handoff-tasks.md) / [v2 Summary（非成功终稿）](./25-agent-tdd-startup-handoff-summary.md) |
 | 26 | Agent 测试、验收与启动收敛效率 | Summary 修订 2 已批准，阶段完成；T26R2-08 可选真实 provider 未执行 | [Spec 修订 2（已批准）](./26-agent-convergence-efficiency-spec.md) / [Task 修订 2（已批准，实施完成）](./26-agent-convergence-efficiency-tasks-revision-2.md) / [Summary 修订 2（已批准）](./26-agent-convergence-efficiency-summary.md) / [原 Task（被取代）](./26-agent-convergence-efficiency-tasks.md) |
-| 27 | 项目 README 与运行说明 | T27-00～T27-05 已完成；Summary 待用户审批 | [Spec（已批准）](./27-project-readme-spec.md) / [Task（已批准，实施完成）](./27-project-readme-tasks.md) / [Summary（待审批）](./27-project-readme-summary.md)；[原阶段 15 最终交付草稿（已被取代）](./15-documentation-video-final-submission-spec.md) |
+| 27 | 项目 README 与运行说明 | Summary 已批准，阶段完成 | [Spec（已批准）](./27-project-readme-spec.md) / [Task（已批准，实施完成）](./27-project-readme-tasks.md) / [Summary（已批准）](./27-project-readme-summary.md) |
+| 28 | README.txt 交付 | README.txt 已完成专项核验，Summary 待用户审批；视频与 ZIP 由用户自行处理 | [Spec 修订 1（已批准）](./28-final-delivery-spec.md) / [Task 修订 1（已批准，实施完成）](./28-final-delivery-tasks-revision-1.md) / [Summary（待审批）](./28-final-delivery-summary.md) / [原 Task（被取代）](./28-final-delivery-tasks.md) |
 
 ## 需求追踪规则
 
@@ -74,6 +75,16 @@ T26R2-00～T26R2-07 现已完成：新普通 run 的 completion/service 最终�
 用户再次明确回复“批准”，阶段 27 Task 获批，现解锁 T27-00～T27-05 的 README 文档实施与验证；README.txt、视频、ZIP、真实 provider、Git commit/push、发布和部署仍未授权。
 
 T27-00～T27-05 已完成：根 README 已替换为中文项目说明，命令、环境变量、六工具、CLI、17 个相对链接、安全模式、模板残留、Markdown 结构和 diff check 均通过专项核对。阶段 27 Summary 已生成并立即停在用户审批门；未运行 README.txt、视频、ZIP、真实 provider、Git commit/push、发布或部署。
+
+用户随后批准阶段 27 Summary，并说明演示视频已录制完成、要求进入交付阶段。阶段 27 正式完成；当前已完成阶段 28 只读观察并生成 `28-final-delivery-spec.md`，停在 Spec 审批门。仓库内未发现视频、README.txt 或 ZIP；视频路径、ZIP 姓名和内容核验仍待用户输入，未执行移动、转码、打包、Git 写入或表单提交。
+
+用户随后明确回复“批准，我需要一份README.txt”，阶段 28 Spec 获批。现已生成 `28-final-delivery-tasks.md` 并停在 Task 审批门；Task 获批前仍未创建 README.txt、读取或复制视频、生成 ZIP、运行全量门禁或执行 Git 写入。视频绝对路径和 ZIP 使用的精确姓名仍待用户提供。
+
+用户在原阶段 28 Task 的审批回复中同时明确“只需要提供 README.txt”，演示视频与 ZIP 由用户自行处理。该要求实质改变阶段范围和验收标准，因此原 Task 未获有效实施授权并被取代，阶段已回退到 Spec 修订 1 审批门。当前不再索取视频路径或 ZIP 姓名，README.txt 尚未创建。
+
+用户随后明确回复“批准”，阶段 28 Spec 修订 1 获批。现已生成 `28-final-delivery-tasks-revision-1.md` 并停在 Task 修订 1 审批门；当前仅规划 README.txt 的创建和专项核验，视频、ZIP、Git 写入和表单提交不在 Codex 授权范围。
+
+用户随后批准阶段 28 Task 修订 1。T28R1-00～T28R1-03 已完成；用户又要求精简项目介绍、突出功能与优化亮点并删除代码层实现细节，根 README.txt 当前为 UTF-8/LF 纯文本，最终为 900 code points、257 个汉字、1498 bytes；事实、安全、控制字符和 diff check 均通过。阶段 28 Summary 已同步修订并停在用户审批门；视频、ZIP、Git 写入和表单提交未执行。
 
 - 功能需求使用 `FR-*` 标识。
 - 非功能需求使用 `NFR-*` 标识。
